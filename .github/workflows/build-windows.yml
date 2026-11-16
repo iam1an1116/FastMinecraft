@@ -25,12 +25,6 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Install backend production dependencies
-        shell: pwsh
-        run: |
-          cd backend
-          npm install --omit=dev
-
       - name: Build Flutter Windows Release
         shell: pwsh
         run: |
@@ -48,12 +42,35 @@ jobs:
       - name: Package Windows Portable Bundle
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist_windows | Out-Null
-          Copy-Item -Recurse -Force flutter_app/build/windows/x64/runner/Release/* dist_windows/
-          New-Item -ItemType Directory -Force -Path dist_windows/backend | Out-Null
-          Copy-Item -Recurse -Force backend/src dist_windows/backend/
-          Copy-Item -Recurse -Force backend/node_modules dist_windows/backend/
-          Copy-Item -Force backend/package.json dist_windows/backend/
+          $ErrorActionPreference = 'Stop'
+          $root = $env:GITHUB_WORKSPACE
+          $dist = Join-Path $env:RUNNER_TEMP 'dist_windows'
+          $releaseDir = Join-Path $root 'flutter_app/build/windows/x64/runner/Release'
+
+          if (-not (Test-Path (Join-Path $releaseDir 'fast_minecraft.exe'))) {
+            Write-Host "::error::Flutter release output not found at $releaseDir"
+            Get-ChildItem -Recurse (Join-Path $root 'flutter_app/build/windows') -Filter *.exe | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+
+          if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item -Recurse -Force (Join-Path $releaseDir '*') $dist
+
+          # Backend: staged OUTSIDE the repo so the root npm "workspaces" config
+          # cannot hoist dependencies away from backend/node_modules.
+          $backendDist = Join-Path $dist 'backend'
+          New-Item -ItemType Directory -Force -Path $backendDist | Out-Null
+          Copy-Item -Recurse -Force (Join-Path $root 'backend/src') $backendDist
+          Copy-Item -Force (Join-Path $root 'backend/package.json') $backendDist
+          Push-Location $backendDist
+          npm install --omit=dev --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+          Pop-Location
+          if (-not (Test-Path (Join-Path $backendDist 'node_modules/express'))) {
+            Write-Host "::error::backend node_modules was not installed into $backendDist"
+            exit 1
+          }
 
           $batLines = @(
             '@echo off',
@@ -70,11 +87,14 @@ jobs:
             'timeout /t 2 /nobreak >nul',
             'start "" fast_minecraft.exe'
           )
-          Set-Content -Path dist_windows/Start_FastMinecraft.bat -Value $batLines -Encoding ASCII
+          Set-Content -Path (Join-Path $dist 'Start_FastMinecraft.bat') -Value $batLines -Encoding ASCII
+
+          Get-ChildItem $dist | ForEach-Object { Write-Host $_.Name }
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
           name: FastMinecraft-Windows-x64
-          path: dist_windows/
+          path: ${{ runner.temp }}/dist_windows/
+          if-no-files-found: error
           retention-days: 30
