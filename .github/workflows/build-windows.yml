@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Checkout repository
@@ -37,7 +37,13 @@ jobs:
           flutter config --enable-windows-desktop
           cd flutter_app
           flutter pub get
-          flutter build windows --release
+          $logFile = Join-Path $env:RUNNER_TEMP 'build_windows.log'
+          flutter build windows --release 2>&1 | Tee-Object -FilePath $logFile
+          $buildCode = $LASTEXITCODE
+          if ($buildCode -ne 0) {
+            Get-Content $logFile -Tail 80 | ForEach-Object { Write-Host "::error::$_" }
+            exit $buildCode
+          }
 
       - name: Package Windows Portable Bundle
         shell: pwsh
@@ -49,16 +55,22 @@ jobs:
           Copy-Item -Recurse -Force backend/node_modules dist_windows/backend/
           Copy-Item -Force backend/package.json dist_windows/backend/
 
-          $bat = @'
-          @echo off
-          cd /d "%~dp0"
-          set PORT=3001
-          set FM_DATA_DIR=%~dp0
-          start "" /B node backend\src\index.js "%~dp0"
-          timeout /t 2 /nobreak >nul
-          start "" fast_minecraft.exe
-          '@
-          Set-Content -Path dist_windows/Start_FastMinecraft.bat -Value $bat -Encoding ASCII
+          $batLines = @(
+            '@echo off',
+            'cd /d "%~dp0"',
+            'where node >nul 2>nul',
+            'if errorlevel 1 (',
+            '  echo Node.js is required. Please install Node.js 20+ from https://nodejs.org/',
+            '  pause',
+            '  exit /b 1',
+            ')',
+            'set "PORT=3001"',
+            'set "FM_DATA_DIR=%~dp0."',
+            'start "" /B node backend\src\index.js "%~dp0."',
+            'timeout /t 2 /nobreak >nul',
+            'start "" fast_minecraft.exe'
+          )
+          Set-Content -Path dist_windows/Start_FastMinecraft.bat -Value $batLines -Encoding ASCII
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4

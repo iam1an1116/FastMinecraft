@@ -2,36 +2,18 @@
 
 #include <commdlg.h>
 #include <dwmapi.h>
-#include <uxtheme.h>
-#include <windowsx.h>
 
 #include <optional>
 #include <string>
 
 #include "flutter/generated_plugin_registrant.h"
-
-#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
-#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
-#endif
-
-#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
-#define DWMWA_WINDOW_CORNER_PREFERENCE 33
-#endif
-
-#ifndef DWMWA_SYSTEMBACKDROP_TYPE
-#define DWMWA_SYSTEMBACKDROP_TYPE 38
-#endif
+#include "utils.h"
 
 namespace {
 
-std::string WideToUtf8(const std::wstring& wide) {
-  if (wide.empty()) return {};
-  int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
-  if (size <= 0) return {};
-  std::string out(static_cast<size_t>(size), 0);
-  WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()), &out[0], size, nullptr, nullptr);
-  return out;
-}
+constexpr DWORD kDwmwaUseImmersiveDarkMode = 20;
+constexpr DWORD kDwmwaWindowCornerPreference = 33;
+constexpr DWORD kDwmwaSystemBackdropType = 38;
 
 }  // namespace
 
@@ -42,17 +24,17 @@ FlutterWindow::~FlutterWindow() {}
 
 void FlutterWindow::ApplyFramelessBackdrop(HWND hwnd) {
   BOOL dark = FALSE;
-  DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+  DwmSetWindowAttribute(hwnd, kDwmwaUseImmersiveDarkMode, &dark, sizeof(dark));
 
   // Windows 11 rounded corners (DWMWCP_ROUND = 2)
   int corner = 2;
-  DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+  DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
 
   // Windows 11 Acrylic backdrop (DWMSBT_TRANSIENTWINDOW = 3) with fallback to Mica (2)
   int backdrop = 3;
-  if (FAILED(DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop)))) {
+  if (FAILED(DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop, sizeof(backdrop)))) {
     backdrop = 2;
-    DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+    DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop, sizeof(backdrop));
   }
 
   MARGINS margins = {-1, -1, -1, -1};
@@ -85,13 +67,19 @@ void FlutterWindow::SetupWindowChannel() {
           PostMessage(hwnd, WM_CLOSE, 0, 0);
           result->Success();
         } else if (method == "pickJarZip" || method == "pickJar" || method == "pickFile") {
-          static const wchar_t kJarZipFilter[] = L"Server Files (*.jar;*.zip)\0*.jar;*.zip\0All Files (*.*)\0*.*\0";
-          static const wchar_t kJarFilter[] = L"JAR Files (*.jar)\0*.jar\0All Files (*.*)\0*.*\0";
-          static const wchar_t kAllFilter[] = L"All Files (*.*)\0*.*\0";
+          static const wchar_t kJarZipFilter[] =
+              L"Server Files (*.jar;*.zip)\0*.jar;*.zip\0All Files (*.*)\0*.*\0";
+          static const wchar_t kJarFilter[] =
+              L"JAR Files (*.jar)\0*.jar\0All Files (*.*)\0*.*\0";
+          static const wchar_t kAllFilter[] =
+              L"All Files (*.*)\0*.*\0";
 
           const wchar_t* filter = kAllFilter;
-          if (method == "pickJarZip") filter = kJarZipFilter;
-          else if (method == "pickJar") filter = kJarFilter;
+          if (method == "pickJarZip") {
+            filter = kJarZipFilter;
+          } else if (method == "pickJar") {
+            filter = kJarFilter;
+          }
 
           wchar_t file_path[MAX_PATH] = {0};
           OPENFILENAMEW ofn = {};
@@ -104,7 +92,7 @@ void FlutterWindow::SetupWindowChannel() {
           ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
           if (GetOpenFileNameW(&ofn)) {
-            result->Success(flutter::EncodableValue(WideToUtf8(file_path)));
+            result->Success(flutter::EncodableValue(Utf8FromUtf16(file_path)));
           } else {
             result->Success();
           }
@@ -145,7 +133,10 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
-  window_channel_.reset();
+  if (window_channel_) {
+    window_channel_->SetMethodCallHandler(nullptr);
+    window_channel_.reset();
+  }
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -169,14 +160,23 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   switch (message) {
     case WM_NCCALCSIZE:
       if (wparam) {
+        if (IsZoomed(hwnd)) {
+          auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
+          HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+          MONITORINFO info = {};
+          info.cbSize = sizeof(info);
+          if (GetMonitorInfoW(monitor, &info)) {
+            params->rgrc[0] = info.rcWork;
+          }
+        }
         return 0;
       }
       break;
     case WM_NCHITTEST: {
       RECT rect;
       GetWindowRect(hwnd, &rect);
-      LONG x = GET_X_LPARAM(lparam);
-      LONG y = GET_Y_LPARAM(lparam);
+      const LONG x = static_cast<LONG>(static_cast<short>(LOWORD(lparam)));
+      const LONG y = static_cast<LONG>(static_cast<short>(HIWORD(lparam)));
       const LONG border = 6;
       bool left = x < rect.left + border;
       bool right = x >= rect.right - border;
