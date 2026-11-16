@@ -7,8 +7,6 @@
 
 #include <optional>
 #include <string>
-#include <variant>
-#include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -29,16 +27,9 @@ namespace {
 std::string WideToUtf8(const std::wstring& wide) {
   if (wide.empty()) return {};
   int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
-  std::string out(size, 0);
+  if (size <= 0) return {};
+  std::string out(static_cast<size_t>(size), 0);
   WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()), &out[0], size, nullptr, nullptr);
-  return out;
-}
-
-std::wstring Utf8ToWide(const std::string& utf8) {
-  if (utf8.empty()) return {};
-  int size = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), nullptr, 0);
-  std::wstring out(size, 0);
-  MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), &out[0], size);
   return out;
 }
 
@@ -93,45 +84,22 @@ void FlutterWindow::SetupWindowChannel() {
         } else if (method == "closeWindow") {
           PostMessage(hwnd, WM_CLOSE, 0, 0);
           result->Success();
-        } else if (method == "pickFile") {
-          std::wstring filter = L"All Files (*.*)\0*.*\0\0";
-          std::wstring custom_filter;
-          if (const auto* args = std::get_if<flutter::EncodableMap>(call.arguments())) {
-            auto it = args->find(flutter::EncodableValue("extensions"));
-            if (it != args->end()) {
-              if (const auto* exts = std::get_if<flutter::EncodableList>(&it->second)) {
-                if (!exts->empty()) {
-                  std::wstring patterns;
-                  for (const auto& e : *exts) {
-                    if (const auto* s = std::get_if<std::string>(&e)) {
-                      if (!patterns.empty()) patterns += L";";
-                      patterns += L"*." + Utf8ToWide(*s);
-                    }
-                  }
-                  custom_filter = L"Server Files (" + patterns + L")";
-                  custom_filter.push_back(L'\0');
-                  custom_filter += patterns;
-                  custom_filter.push_back(L'\0');
-                  custom_filter += L"All Files (*.*)";
-                  custom_filter.push_back(L'\0');
-                  custom_filter += L"*.*";
-                  custom_filter.push_back(L'\0');
-                  custom_filter.push_back(L'\0');
-                }
-              }
-            }
-          }
+        } else if (method == "pickJarZip" || method == "pickJar" || method == "pickFile") {
+          static const wchar_t kJarZipFilter[] = L"Server Files (*.jar;*.zip)\0*.jar;*.zip\0All Files (*.*)\0*.*\0";
+          static const wchar_t kJarFilter[] = L"JAR Files (*.jar)\0*.jar\0All Files (*.*)\0*.*\0";
+          static const wchar_t kAllFilter[] = L"All Files (*.*)\0*.*\0";
 
-          static const wchar_t kDefaultFilter[] = L"All Files (*.*)\0*.*\0";
+          const wchar_t* filter = kAllFilter;
+          if (method == "pickJarZip") filter = kJarZipFilter;
+          else if (method == "pickJar") filter = kJarFilter;
+
           wchar_t file_path[MAX_PATH] = {0};
           OPENFILENAMEW ofn = {};
           ofn.lStructSize = sizeof(ofn);
           ofn.hwndOwner = hwnd;
           ofn.lpstrFile = file_path;
           ofn.nMaxFile = MAX_PATH;
-          ofn.lpstrFilter = custom_filter.empty()
-              ? kDefaultFilter
-              : custom_filter.c_str();
+          ofn.lpstrFilter = filter;
           ofn.nFilterIndex = 1;
           ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
@@ -200,7 +168,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
 
   switch (message) {
     case WM_NCCALCSIZE:
-      if (wparam == TRUE) {
+      if (wparam) {
         return 0;
       }
       break;
@@ -225,7 +193,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       break;
     }
     case WM_FONTCHANGE:
-      flutter_controller_->engine()->ReloadSystemFonts();
+      if (flutter_controller_) {
+        flutter_controller_->engine()->ReloadSystemFonts();
+      }
       break;
   }
 

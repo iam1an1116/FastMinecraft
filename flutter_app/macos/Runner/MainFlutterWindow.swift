@@ -114,9 +114,20 @@ class MainFlutterWindow: NSWindow {
       case "zoomWindow":
         self.zoom(nil)
         result(nil)
-      case "pickFile":
+      case "minimizeWindow":
+        self.miniaturize(nil)
+        result(nil)
+      case "closeWindow":
+        self.performClose(nil)
+        result(nil)
+      case "pickJarZip", "pickJar", "pickFile":
         let args = call.arguments as? [String: Any]
-        let extensions = args?["extensions"] as? [String] ?? []
+        var extensions = args?["extensions"] as? [String] ?? []
+        if call.method == "pickJarZip" {
+          extensions = ["jar", "zip"]
+        } else if call.method == "pickJar" {
+          extensions = ["jar"]
+        }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false

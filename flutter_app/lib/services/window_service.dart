@@ -34,9 +34,13 @@ class WindowService {
 
   static Future<String?> pickFile({List<String> extensions = const []}) async {
     try {
-      final path = await _channel.invokeMethod<String>('pickFile', {
-        'extensions': extensions,
-      });
+      String method = 'pickFile';
+      if (extensions.contains('jar') && extensions.contains('zip')) {
+        method = 'pickJarZip';
+      } else if (extensions.contains('jar')) {
+        method = 'pickJar';
+      }
+      final path = await _channel.invokeMethod<String>(method);
       return path;
     } catch (_) {
       return null;
