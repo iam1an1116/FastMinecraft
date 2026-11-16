@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../services/window_service.dart';
 import '../widgets/ripple_button.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -155,7 +156,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                     r['path']?.toString() ?? '',
                                     textAlign: TextAlign.right,
                                     overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(fontSize: 11, fontFamily: 'Menlo', color: Colors.black.withOpacity(0.42)),
+                                    style: TextStyle(fontSize: 11, fontFamily: WindowService.monoFont, color: Colors.black.withOpacity(0.42)),
                                   ),
                                 ),
                               ],

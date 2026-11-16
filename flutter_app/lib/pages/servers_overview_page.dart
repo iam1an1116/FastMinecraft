@@ -4,6 +4,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../models/server_model.dart';
 import '../services/api_service.dart';
+import '../services/window_service.dart';
 import '../widgets/memory_slider.dart';
 import '../widgets/ripple_button.dart';
 
@@ -239,7 +240,7 @@ class _ServersOverviewPageState extends State<ServersOverviewPage> {
                         fontSize: 11,
                         fontWeight: FontWeight.w500,
                         color: Colors.black.withOpacity(0.42),
-                        fontFamily: 'Menlo',
+                        fontFamily: WindowService.monoFont,
                       ),
                     ),
                   ],

@@ -292,7 +292,7 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
       children: [
         Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w500, color: Colors.black.withOpacity(0.38))),
         const SizedBox(height: 2),
-        Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: valueColor, fontFamily: 'Menlo')),
+        Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: valueColor, fontFamily: WindowService.monoFont)),
       ],
     );
   }
@@ -312,7 +312,7 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
                 ? Center(
                     child: Text(
                       _status == 'running' ? '等待日志输出...' : '服务器未运行',
-                      style: TextStyle(fontSize: 12, color: Colors.black.withOpacity(0.35), fontFamily: 'Menlo'),
+                      style: TextStyle(fontSize: 12, color: Colors.black.withOpacity(0.35), fontFamily: WindowService.monoFont),
                     ),
                   )
                 : ListView.builder(
@@ -335,7 +335,7 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
                           style: TextStyle(
                             color: lineColor,
                             fontSize: 12,
-                            fontFamily: 'Menlo',
+                            fontFamily: WindowService.monoFont,
                             height: 1.4,
                           ),
                         ),
@@ -353,12 +353,12 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
           ),
           child: Row(
             children: [
-              Text('>', style: TextStyle(color: Colors.black.withOpacity(0.35), fontWeight: FontWeight.bold, fontFamily: 'Menlo')),
+              Text('>', style: TextStyle(color: Colors.black.withOpacity(0.35), fontWeight: FontWeight.bold, fontFamily: WindowService.monoFont)),
               const SizedBox(width: 10),
               Expanded(
                 child: TextField(
                   controller: _cmdController,
-                  style: const TextStyle(fontSize: 13, color: Color(0xFF151515), fontFamily: 'Menlo'),
+                  style: TextStyle(fontSize: 13, color: const Color(0xFF151515), fontFamily: WindowService.monoFont),
                   decoration: InputDecoration(
                     border: InputBorder.none,
                     hintText: '输入指令',

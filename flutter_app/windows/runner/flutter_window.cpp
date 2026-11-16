@@ -13,6 +13,59 @@ namespace {
 
 constexpr DWORD kDwmwaUseImmersiveDarkMode = 20;
 constexpr DWORD kDwmwaWindowCornerPreference = 33;
+constexpr DWORD kDwmwaCaptionColor = 35;
+constexpr DWORD kDwmwaSystemBackdropType = 38;
+constexpr DWORD kDwmwaMicaEffect = 1029;
+constexpr DWORD kDwmwaColorNone = 0xFFFFFFFE;
+
+enum FmAccentState {
+  kAccentDisabled = 0,
+  kAccentEnableAcrylicBlurBehind = 4,
+};
+
+struct FmAccentPolicy {
+  int accent_state;
+  DWORD accent_flags;
+  DWORD gradient_color;
+  DWORD animation_id;
+};
+
+struct FmWindowCompositionAttribData {
+  int attrib;
+  PVOID pv_data;
+  SIZE_T cb_data;
+};
+
+constexpr int kWcaAccentPolicy = 19;
+
+using SetWindowCompositionAttributeFn = BOOL(WINAPI*)(HWND, FmWindowCompositionAttribData*);
+using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+
+DWORD GetWindowsBuildNumber() {
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  if (!ntdll) return 0;
+  auto rtl_get_version =
+      reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion"));
+  if (!rtl_get_version) return 0;
+  OSVERSIONINFOW osvi = {};
+  osvi.dwOSVersionInfoSize = sizeof(osvi);
+  if (rtl_get_version(&osvi) == 0) {
+    return osvi.dwBuildNumber;
+  }
+  return 0;
+}
+
+void SetAccentPolicy(HWND hwnd, int state, DWORD flags, DWORD abgr_color) {
+  HMODULE user32 = GetModuleHandleW(L"user32.dll");
+  if (!user32) return;
+  auto set_wca = reinterpret_cast<SetWindowCompositionAttributeFn>(
+      GetProcAddress(user32, "SetWindowCompositionAttribute"));
+  if (!set_wca) return;
+
+  FmAccentPolicy policy = {state, flags, abgr_color, 0};
+  FmWindowCompositionAttribData data = {kWcaAccentPolicy, &policy, sizeof(policy)};
+  set_wca(hwnd, &data);
+}
 
 bool FileExists(const std::wstring& path) {
   DWORD attrs = GetFileAttributesW(path.c_str());
@@ -48,16 +101,46 @@ void FlutterWindow::ApplyFramelessBackdrop(HWND hwnd) {
   SetWindowLongPtrW(hwnd, GWL_STYLE, style);
   SetMenu(hwnd, nullptr);
 
+  // Reset legacy accent policy before applying DWM/Acrylic material.
+  SetAccentPolicy(hwnd, kAccentDisabled, 2, 0);
+
+  const DWORD build = GetWindowsBuildNumber();
   BOOL dark = FALSE;
   DwmSetWindowAttribute(hwnd, kDwmwaUseImmersiveDarkMode, &dark, sizeof(dark));
 
-  // Windows 11 rounded corners (DWMWCP_ROUND = 2)
-  int corner = 2;
-  DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
+  if (build >= 22523) {
+    // Windows 11 22H2+ native Acrylic backdrop + smooth DWM rounded corners.
+    MARGINS margins = {-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
 
-  // Keep native drop shadow without drawing a default DWM caption frame.
-  MARGINS margins = {0, 0, 1, 0};
-  DwmExtendFrameIntoClientArea(hwnd, &margins);
+    COLORREF color_none = kDwmwaColorNone;
+    DwmSetWindowAttribute(hwnd, kDwmwaCaptionColor, &color_none, sizeof(color_none));
+
+    int corner = 2;  // DWMWCP_ROUND
+    DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
+
+    int backdrop = 3;  // DWMSBT_TRANSIENTWINDOW (Acrylic)
+    if (FAILED(DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop, sizeof(backdrop)))) {
+      backdrop = 2;  // Fallback: Mica
+      DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop, sizeof(backdrop));
+    }
+  } else if (build >= 22000) {
+    // Windows 11 21H2
+    MARGINS margins = {-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+    int corner = 2;
+    DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
+
+    SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2, 0xB8FFFFFF);
+    BOOL enable_mica = TRUE;
+    DwmSetWindowAttribute(hwnd, kDwmwaMicaEffect, &enable_mica, sizeof(enable_mica));
+  } else {
+    // Windows 10 Acrylic fallback (light frosted white tint)
+    MARGINS margins = {0, 0, 1, 0};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+    SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2, 0xCCFFFFFF);
+  }
 }
 
 void FlutterWindow::StartBundledBackend() {
@@ -168,9 +251,9 @@ void FlutterWindow::SetupWindowChannel() {
         const std::string& method = call.method_name();
 
         if (method == "startDragging") {
+          result->Success();
           ReleaseCapture();
           SendMessage(hwnd, WM_SYSCOMMAND, SC_MOVE | HTCAPTION, 0);
-          result->Success();
         } else if (method == "zoomWindow") {
           ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
           result->Success();

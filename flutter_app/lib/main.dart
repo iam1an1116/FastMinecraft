@@ -113,10 +113,10 @@ class _MainAppShellState extends State<MainAppShell> {
 
   @override
   Widget build(BuildContext context) {
-    final double rAngle = Platform.isMacOS ? 32.0 : 12.0;
+    final double rAngle = Platform.isMacOS ? 32.0 : 8.0;
     final Color surfaceColor = Platform.isMacOS
         ? Colors.white.withOpacity(0.28)
-        : const Color(0xFFF6F7FB);
+        : Colors.white.withOpacity(0.42);
 
     return Scaffold(
       backgroundColor: Colors.transparent,

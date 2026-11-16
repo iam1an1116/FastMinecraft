@@ -426,7 +426,7 @@ class _MarketPageState extends State<MarketPage> {
                               ),
                               child: Text(
                                 item.badgeVersion,
-                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, fontFamily: 'Menlo', color: Colors.black.withOpacity(0.55)),
+                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, fontFamily: WindowService.monoFont, color: Colors.black.withOpacity(0.55)),
                               ),
                             ),
                             const SizedBox(width: 6),
@@ -451,7 +451,7 @@ class _MarketPageState extends State<MarketPage> {
                   if (item.downloads != null) ...[
                     Text(
                       _formatDownloads(item.downloads),
-                      style: TextStyle(fontSize: 11, fontFamily: 'Menlo', color: Colors.black.withOpacity(0.38)),
+                      style: TextStyle(fontSize: 11, fontFamily: WindowService.monoFont, color: Colors.black.withOpacity(0.38)),
                     ),
                     const SizedBox(width: 8),
                   ],
@@ -511,7 +511,7 @@ class _MarketPageState extends State<MarketPage> {
                     _selectedVersion = v;
                     _nameCtrl.text = '${item.id}-$v';
                   }),
-                  child: Text(v, style: TextStyle(fontSize: 11, fontFamily: 'Menlo', fontWeight: sel ? FontWeight.w700 : FontWeight.w500)),
+                  child: Text(v, style: TextStyle(fontSize: 11, fontFamily: WindowService.monoFont, fontWeight: sel ? FontWeight.w700 : FontWeight.w500)),
                 );
               }).toList(),
             )
@@ -534,7 +534,7 @@ class _MarketPageState extends State<MarketPage> {
                   }),
                   child: Text(
                     '${mv['versionNumber'] ?? ''} ${gv.isNotEmpty ? '($gv)' : ''}',
-                    style: TextStyle(fontSize: 11, fontFamily: 'Menlo', fontWeight: sel ? FontWeight.w700 : FontWeight.w500),
+                    style: TextStyle(fontSize: 11, fontFamily: WindowService.monoFont, fontWeight: sel ? FontWeight.w700 : FontWeight.w500),
                   ),
                 );
               }).toList(),

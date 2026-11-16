@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/server_model.dart';
 import '../services/api_service.dart';
+import '../services/window_service.dart';
 import '../widgets/ripple_button.dart';
 import '../widgets/sliding_pill_bar.dart';
 
@@ -216,7 +217,7 @@ class _NetworkPageState extends State<NetworkPage> {
           const SizedBox(height: 18),
           SelectableText(
             address,
-            style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w700, fontFamily: 'Menlo', color: Color(0xFF151515)),
+            style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700, fontFamily: WindowService.monoFont, color: const Color(0xFF151515)),
           ),
           const SizedBox(height: 22),
           RippleButton(
@@ -260,7 +261,7 @@ class _NetworkPageState extends State<NetworkPage> {
                       style: TextStyle(
                         fontSize: address != null ? 16 : 14,
                         fontWeight: FontWeight.w700,
-                        fontFamily: 'Menlo',
+                        fontFamily: WindowService.monoFont,
                         color: address != null ? const Color(0xFF151515) : const Color(0xFFE11D48),
                       ),
                     ),
@@ -372,12 +373,12 @@ class _NetworkPageState extends State<NetworkPage> {
           if (active) ...[
             SelectableText(
               roomCode,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 32,
                 fontWeight: FontWeight.w800,
-                fontFamily: 'Menlo',
+                fontFamily: WindowService.monoFont,
                 letterSpacing: 3,
-                color: Color(0xFF151515),
+                color: const Color(0xFF151515),
               ),
             ),
             const SizedBox(height: 10),
@@ -386,7 +387,7 @@ class _NetworkPageState extends State<NetworkPage> {
             if (_p2pStatus['pubIp'] != null)
               Text(
                 'NAT: ${natType == 'symmetric' ? '对称型 (打洞较严)' : '锥形 (适合直连)'} · ${_p2pStatus['pubIp']}:${_p2pStatus['pubPort']}',
-                style: TextStyle(fontSize: 11, fontFamily: 'Menlo', color: Colors.black.withOpacity(0.4)),
+                style: TextStyle(fontSize: 11, fontFamily: WindowService.monoFont, color: Colors.black.withOpacity(0.4)),
               ),
             const SizedBox(height: 22),
             Row(

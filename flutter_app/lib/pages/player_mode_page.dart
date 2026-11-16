@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/api_service.dart';
+import '../services/window_service.dart';
 import '../widgets/ripple_button.dart';
 
 class PlayerModePage extends StatefulWidget {
@@ -122,12 +123,12 @@ class _PlayerModePageState extends State<PlayerModePage> {
                     controller: _codeController,
                     textAlign: TextAlign.center,
                     textCapitalization: TextCapitalization.characters,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w700,
-                      fontFamily: 'Menlo',
+                      fontFamily: WindowService.monoFont,
                       letterSpacing: 2,
-                      color: Color(0xFF151515),
+                      color: const Color(0xFF151515),
                     ),
                     decoration: InputDecoration(
                       border: InputBorder.none,
@@ -186,14 +187,14 @@ class _PlayerModePageState extends State<PlayerModePage> {
                     const Text('P2P 直连已就绪', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF059669))),
                     if (pingMs != null) ...[
                       const SizedBox(width: 8),
-                      Text('$pingMs ms', style: TextStyle(fontSize: 12, fontFamily: 'Menlo', color: Colors.black.withOpacity(0.45))),
+                      Text('$pingMs ms', style: TextStyle(fontSize: 12, fontFamily: WindowService.monoFont, color: Colors.black.withOpacity(0.45))),
                     ],
                   ],
                 ),
                 const SizedBox(height: 16),
                 SelectableText(
                   localAddress ?? '127.0.0.1:25565',
-                  style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, fontFamily: 'Menlo', color: Color(0xFF151515)),
+                  style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, fontFamily: WindowService.monoFont, color: const Color(0xFF151515)),
                 ),
                 const SizedBox(height: 22),
                 Row(
