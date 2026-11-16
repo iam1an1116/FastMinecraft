@@ -248,6 +248,7 @@ export class ServerManager {
       // Forge/NeoForge uses @args.txt format
       args = [
         '-Djava.awt.headless=true',
+        '-Dfile.encoding=UTF-8',
         `-Xmx${server.max_memory}M`,
         `-Xms${Math.min(server.max_memory, 512)}M`,
         `@${launchConfig.path}`,
@@ -256,6 +257,7 @@ export class ServerManager {
     } else {
       args = [
         '-Djava.awt.headless=true',
+        '-Dfile.encoding=UTF-8',
         `-Xmx${server.max_memory}M`,
         `-Xms${Math.min(server.max_memory, 512)}M`,
         '-jar',

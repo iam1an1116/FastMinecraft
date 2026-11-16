@@ -338,8 +338,10 @@ class _NetworkPageState extends State<NetworkPage> {
   Widget _buildP2pView() {
     final bool active = _p2pStatus['active'] == true;
     final String status = _p2pStatus['status']?.toString() ?? 'idle';
+    final String transport = _p2pStatus['transport']?.toString() ?? 'p2p';
     final String roomCode = _p2pStatus['roomCode']?.toString() ?? '';
     final String natType = _p2pStatus['natType']?.toString() ?? 'unknown';
+    final bool vpsConnected = _p2pStatus['vpsConnected'] == true;
     final int peersCount = _p2pStatus['peersCount'] is int ? _p2pStatus['peersCount'] : 0;
     final String? err = _p2pStatus['error']?.toString();
 
@@ -349,13 +351,17 @@ class _NetworkPageState extends State<NetworkPage> {
       statusLabel = 'STUN 公网探测中...';
       statusColor = const Color(0xFF0284C7);
     } else if (status == 'waiting_peer') {
-      statusLabel = '房间已就绪 · 等待玩家输入房间码';
+      statusLabel = vpsConnected
+          ? '房间已就绪 · 支持直连与对称 NAT 中继兜底'
+          : '房间已就绪 · 等待玩家输入房间码';
       statusColor = const Color(0xFF059669);
     } else if (status == 'punching') {
-      statusLabel = '正在进行 NAT 打洞...';
+      statusLabel = '正在进行 NAT 端口预测打洞...';
       statusColor = const Color(0xFFD97706);
     } else if (status == 'connected') {
-      statusLabel = 'P2P 已打通 · $peersCount 位玩家直连中';
+      statusLabel = transport == 'relay'
+          ? '已通过中继兜底连通 · $peersCount 位玩家'
+          : 'P2P 已打通 · $peersCount 位玩家直连中';
       statusColor = const Color(0xFF059669);
     } else if (status == 'error') {
       statusLabel = err ?? 'P2P 启动失败';
@@ -386,7 +392,7 @@ class _NetworkPageState extends State<NetworkPage> {
             const SizedBox(height: 6),
             if (_p2pStatus['pubIp'] != null)
               Text(
-                'NAT: ${natType == 'symmetric' ? '对称型 (打洞较严)' : '锥形 (适合直连)'} · ${_p2pStatus['pubIp']}:${_p2pStatus['pubPort']}',
+                'NAT: ${natType == 'symmetric' ? '对称型 (已启用中继兜底)' : '锥形 (适合直连)'} · ${_p2pStatus['pubIp']}:${_p2pStatus['pubPort']}',
                 style: TextStyle(fontSize: 11, fontFamily: WindowService.monoFont, color: Colors.black.withOpacity(0.4)),
               ),
             const SizedBox(height: 22),

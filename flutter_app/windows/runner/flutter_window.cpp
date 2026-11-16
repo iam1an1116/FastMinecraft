@@ -13,6 +13,7 @@ namespace {
 
 constexpr DWORD kDwmwaUseImmersiveDarkMode = 20;
 constexpr DWORD kDwmwaWindowCornerPreference = 33;
+constexpr DWORD kDwmwaBorderColor = 34;
 constexpr DWORD kDwmwaCaptionColor = 35;
 constexpr DWORD kDwmwaSystemBackdropType = 38;
 constexpr DWORD kDwmwaMicaEffect = 1029;
@@ -96,9 +97,6 @@ FlutterWindow::~FlutterWindow() {
 }
 
 void FlutterWindow::ApplyFramelessBackdrop(HWND hwnd) {
-  LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-  style &= ~static_cast<LONG_PTR>(WS_CAPTION);
-  SetWindowLongPtrW(hwnd, GWL_STYLE, style);
   SetMenu(hwnd, nullptr);
 
   // Reset legacy accent policy before applying DWM/Acrylic material.
@@ -115,6 +113,7 @@ void FlutterWindow::ApplyFramelessBackdrop(HWND hwnd) {
 
     COLORREF color_none = kDwmwaColorNone;
     DwmSetWindowAttribute(hwnd, kDwmwaCaptionColor, &color_none, sizeof(color_none));
+    DwmSetWindowAttribute(hwnd, kDwmwaBorderColor, &color_none, sizeof(color_none));
 
     int corner = 2;  // DWMWCP_ROUND
     DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
@@ -132,14 +131,14 @@ void FlutterWindow::ApplyFramelessBackdrop(HWND hwnd) {
     int corner = 2;
     DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
 
-    SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2, 0xB8FFFFFF);
+    SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2, 0x99FFFFFF);
     BOOL enable_mica = TRUE;
     DwmSetWindowAttribute(hwnd, kDwmwaMicaEffect, &enable_mica, sizeof(enable_mica));
   } else {
     // Windows 10 Acrylic fallback (light frosted white tint)
-    MARGINS margins = {0, 0, 1, 0};
+    MARGINS margins = {-1, -1, -1, -1};
     DwmExtendFrameIntoClientArea(hwnd, &margins);
-    SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2, 0xCCFFFFFF);
+    SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2, 0xA8FFFFFF);
   }
 }
 
@@ -324,6 +323,7 @@ bool FlutterWindow::OnCreate() {
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
+    this->ApplyFramelessBackdrop(this->GetHandle());
   });
 
   flutter_controller_->ForceRedraw();
@@ -358,6 +358,8 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   switch (message) {
+    case WM_ERASEBKGND:
+      return 1;
     case WM_NCCALCSIZE:
       if (wparam) {
         if (IsZoomed(hwnd)) {
@@ -369,8 +371,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
             params->rgrc[0] = info.rcWork;
           }
         }
+        return 0;
       }
-      return 0;
+      break;
     case WM_NCACTIVATE:
       return TRUE;
     case WM_NCHITTEST: {

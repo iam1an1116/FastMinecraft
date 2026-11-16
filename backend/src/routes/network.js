@@ -36,8 +36,10 @@ router.get('/p2p/host/status', (req, res) => {
 
 router.post('/p2p/player/join', async (req, res) => {
   try {
-    const { roomCode, localPort } = req.body;
-    const status = await P2PManager.joinRoom(roomCode, localPort || 25565);
+    const { roomCode, localPort, forceRelay } = req.body;
+    const status = await P2PManager.joinRoom(roomCode, localPort || 25565, {
+      forceRelay: Boolean(forceRelay),
+    });
     res.json(status);
   } catch (err) {
     res.status(400).json({ error: err.message });
