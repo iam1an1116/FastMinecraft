@@ -9,6 +9,17 @@ class ApiService {
     'Content-Type': 'application/json',
   };
 
+  static Future<bool> pingBackend() async {
+    try {
+      final res = await http
+          .get(Uri.parse('$baseUrl/servers'), headers: defaultHeaders)
+          .timeout(const Duration(milliseconds: 600));
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // Servers
   static Future<List<ServerInfo>> getServers() async {
     try {

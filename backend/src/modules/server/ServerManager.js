@@ -99,16 +99,18 @@ export class ServerManager {
         continue;
       }
 
-      // Check for running Java process
+      // Check for running Java process (Unix only; Windows re-attaches via fresh start)
       let hasProcess = false;
-      try {
-        const launchConfig = this.findJarFile(serverDir, server.server_type);
-        if (launchConfig) {
-          const searchPath = launchConfig.path;
-          const psOutput = execSync(`ps aux | grep "${searchPath}" | grep -v grep`, { encoding: 'utf-8' });
-          hasProcess = psOutput.trim().length > 0;
-        }
-      } catch {}
+      if (process.platform !== 'win32') {
+        try {
+          const launchConfig = this.findJarFile(serverDir, server.server_type);
+          if (launchConfig) {
+            const searchPath = launchConfig.path;
+            const psOutput = execSync(`ps aux | grep "${searchPath}" | grep -v grep`, { encoding: 'utf-8' });
+            hasProcess = psOutput.trim().length > 0;
+          }
+        } catch {}
+      }
 
       if (hasProcess) {
         // Kill the old process (we can't re-attach to it)
@@ -414,8 +416,10 @@ export class ServerManager {
     if (!existsSync(dir)) return null;
     const files = readdirSync(dir);
 
-    // Check for Forge/NeoForge args file first
-    const argsFile = files.find(f => f === 'unix_args.txt' || f === 'win_args.txt');
+    // Check for Forge/NeoForge args file first (match host OS)
+    const preferredArgs = process.platform === 'win32' ? 'win_args.txt' : 'unix_args.txt';
+    const fallbackArgs = process.platform === 'win32' ? 'unix_args.txt' : 'win_args.txt';
+    const argsFile = files.find(f => f === preferredArgs) || files.find(f => f === fallbackArgs);
     if (argsFile) return { type: 'args', path: join(dir, argsFile) };
 
     const patterns = {

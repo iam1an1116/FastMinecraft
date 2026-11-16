@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'models/server_model.dart';
@@ -7,6 +8,7 @@ import 'pages/player_mode_page.dart';
 import 'pages/server_detail_page.dart';
 import 'pages/servers_overview_page.dart';
 import 'pages/settings_page.dart';
+import 'services/api_service.dart';
 import 'services/storage_service.dart';
 import 'widgets/desktop_header.dart';
 import 'widgets/role_onboarding.dart';
@@ -53,11 +55,39 @@ class _MainAppShellState extends State<MainAppShell> {
 
   ServerInfo? _activeServer;
   ServerDetailTab _currentDetailTab = ServerDetailTab.console;
+  int _backendEpoch = 0;
+  Timer? _bootTimer;
+  bool _disposed = false;
 
   @override
   void initState() {
     super.initState();
     _role = StorageService.getRole();
+    _ensureBackendReady(0);
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _bootTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _ensureBackendReady(int attempt) async {
+    if (_disposed || !mounted) return;
+    final ok = await ApiService.pingBackend();
+    if (_disposed || !mounted) return;
+    if (ok) {
+      if (attempt > 0) {
+        setState(() => _backendEpoch++);
+      }
+      return;
+    }
+    if (attempt < 20) {
+      _bootTimer = Timer(const Duration(milliseconds: 250), () {
+        _ensureBackendReady(attempt + 1);
+      });
+    }
   }
 
   void _onRoleSelected(String role) {
@@ -84,6 +114,9 @@ class _MainAppShellState extends State<MainAppShell> {
   @override
   Widget build(BuildContext context) {
     final double rAngle = Platform.isMacOS ? 32.0 : 12.0;
+    final Color surfaceColor = Platform.isMacOS
+        ? Colors.white.withOpacity(0.28)
+        : const Color(0xFFF6F7FB);
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -91,7 +124,7 @@ class _MainAppShellState extends State<MainAppShell> {
         borderRadius: BorderRadius.circular(rAngle),
         child: Container(
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.28),
+            color: surfaceColor,
             borderRadius: BorderRadius.circular(rAngle),
             border: Border.all(
               color: Colors.white.withOpacity(0.55),
@@ -149,9 +182,9 @@ class _MainAppShellState extends State<MainAppShell> {
 
   Widget _buildCurrentPage() {
     if (_role == 'player') {
-      return const KeyedSubtree(
-        key: ValueKey('player_mode'),
-        child: PlayerModePage(),
+      return KeyedSubtree(
+        key: ValueKey('player_mode_$_backendEpoch'),
+        child: const PlayerModePage(),
       );
     }
 
@@ -169,7 +202,7 @@ class _MainAppShellState extends State<MainAppShell> {
     switch (_currentMainTab) {
       case HostMainTab.servers:
         return KeyedSubtree(
-          key: const ValueKey('servers_overview'),
+          key: ValueKey('servers_overview_$_backendEpoch'),
           child: ServersOverviewPage(
             onSelectServer: _onSelectServer,
             onGoToMarket: () => setState(() => _currentMainTab = HostMainTab.market),

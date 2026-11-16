@@ -57,6 +57,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item -Recurse -Force (Join-Path $releaseDir '*') $dist
 
+          # Bundle portable node.exe so users can double-click fast_minecraft.exe directly
+          $nodeDir = Join-Path $dist 'node'
+          New-Item -ItemType Directory -Force -Path $nodeDir | Out-Null
+          $nodeExe = (Get-Command node).Source
+          Copy-Item -Force $nodeExe (Join-Path $nodeDir 'node.exe')
+
           # Backend: staged OUTSIDE the repo so the root npm "workspaces" config
           # cannot hoist dependencies away from backend/node_modules.
           $backendDist = Join-Path $dist 'backend'
@@ -67,27 +73,21 @@ jobs:
           npm install --omit=dev --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
           Pop-Location
-          if (-not (Test-Path (Join-Path $backendDist 'node_modules/express'))) {
-            Write-Host "::error::backend node_modules was not installed into $backendDist"
-            exit 1
-          }
 
-          $batLines = @(
-            '@echo off',
-            'cd /d "%~dp0"',
-            'where node >nul 2>nul',
-            'if errorlevel 1 (',
-            '  echo Node.js is required. Please install Node.js 20+ from https://nodejs.org/',
-            '  pause',
-            '  exit /b 1',
-            ')',
-            'set "PORT=3001"',
-            'set "FM_DATA_DIR=%~dp0."',
-            'start "" /B node backend\src\index.js "%~dp0."',
-            'timeout /t 2 /nobreak >nul',
-            'start "" fast_minecraft.exe'
+          $required = @(
+            'fast_minecraft.exe',
+            'node/node.exe',
+            'backend/src/index.js',
+            'backend/src/database/init.js',
+            'backend/src/modules/java/JavaManager.js',
+            'backend/node_modules/express'
           )
-          Set-Content -Path (Join-Path $dist 'Start_FastMinecraft.bat') -Value $batLines -Encoding ASCII
+          foreach ($rel in $required) {
+            if (-not (Test-Path (Join-Path $dist $rel))) {
+              Write-Host "::error::Missing required bundle file: $rel"
+              exit 1
+            }
+          }
 
           Get-ChildItem $dist | ForEach-Object { Write-Host $_.Name }
 

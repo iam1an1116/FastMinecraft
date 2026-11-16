@@ -13,11 +13,11 @@ flutter_app/macos/Flutter/ephemeral/
 flutter_app/.flutter-plugins*
 
 # Runtime data
-database/
-instances/
-downloads/
-java/
-backups/
+/database/
+/instances/
+/downloads/
+/java/
+/backups/
 *.db
 *.db-journal
 *.db-wal

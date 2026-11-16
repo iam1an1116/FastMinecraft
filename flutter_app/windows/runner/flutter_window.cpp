@@ -13,16 +13,41 @@ namespace {
 
 constexpr DWORD kDwmwaUseImmersiveDarkMode = 20;
 constexpr DWORD kDwmwaWindowCornerPreference = 33;
-constexpr DWORD kDwmwaSystemBackdropType = 38;
+
+bool FileExists(const std::wstring& path) {
+  DWORD attrs = GetFileAttributesW(path.c_str());
+  return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+std::wstring GetExeDirectory() {
+  wchar_t buffer[MAX_PATH] = {0};
+  DWORD len = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+  if (len == 0 || len >= MAX_PATH) {
+    return L".";
+  }
+  std::wstring full(buffer, len);
+  size_t pos = full.find_last_of(L"\\/");
+  if (pos == std::wstring::npos) {
+    return L".";
+  }
+  return full.substr(0, pos);
+}
 
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
-FlutterWindow::~FlutterWindow() {}
+FlutterWindow::~FlutterWindow() {
+  StopBundledBackend();
+}
 
 void FlutterWindow::ApplyFramelessBackdrop(HWND hwnd) {
+  LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+  style &= ~static_cast<LONG_PTR>(WS_CAPTION);
+  SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+  SetMenu(hwnd, nullptr);
+
   BOOL dark = FALSE;
   DwmSetWindowAttribute(hwnd, kDwmwaUseImmersiveDarkMode, &dark, sizeof(dark));
 
@@ -30,15 +55,104 @@ void FlutterWindow::ApplyFramelessBackdrop(HWND hwnd) {
   int corner = 2;
   DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
 
-  // Windows 11 Acrylic backdrop (DWMSBT_TRANSIENTWINDOW = 3) with fallback to Mica (2)
-  int backdrop = 3;
-  if (FAILED(DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop, sizeof(backdrop)))) {
-    backdrop = 2;
-    DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop, sizeof(backdrop));
+  // Keep native drop shadow without drawing a default DWM caption frame.
+  MARGINS margins = {0, 0, 1, 0};
+  DwmExtendFrameIntoClientArea(hwnd, &margins);
+}
+
+void FlutterWindow::StartBundledBackend() {
+  if (backend_process_ != nullptr) {
+    return;
   }
 
-  MARGINS margins = {-1, -1, -1, -1};
-  DwmExtendFrameIntoClientArea(hwnd, &margins);
+  std::wstring exe_dir = GetExeDirectory();
+  std::wstring index_js = exe_dir + L"\\backend\\src\\index.js";
+  if (!FileExists(index_js)) {
+    return;
+  }
+
+  std::wstring node_exe = exe_dir + L"\\node\\node.exe";
+  if (!FileExists(node_exe)) {
+    wchar_t found[MAX_PATH] = {0};
+    if (SearchPathW(nullptr, L"node.exe", nullptr, MAX_PATH, found, nullptr) > 0) {
+      node_exe = found;
+    } else {
+      return;
+    }
+  }
+
+  SetEnvironmentVariableW(L"PORT", L"3001");
+  SetEnvironmentVariableW(L"FM_DATA_DIR", exe_dir.c_str());
+
+  if (!backend_job_) {
+    backend_job_ = CreateJobObjectW(nullptr, nullptr);
+    if (backend_job_) {
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = {};
+      jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      SetInformationJobObject(backend_job_, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
+    }
+  }
+
+  SECURITY_ATTRIBUTES sa = {};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+
+  std::wstring log_path = exe_dir + L"\\fm-backend.log";
+  HANDLE log_handle = CreateFileW(
+      log_path.c_str(),
+      GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE,
+      &sa,
+      CREATE_ALWAYS,
+      FILE_ATTRIBUTE_NORMAL,
+      nullptr);
+
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
+  if (log_handle != INVALID_HANDLE_VALUE) {
+    si.dwFlags |= STARTF_USESTDHANDLES;
+    si.hStdOutput = log_handle;
+    si.hStdError = log_handle;
+    si.hStdInput = nullptr;
+  }
+
+  std::wstring cmd = L"\"" + node_exe + L"\" \"" + index_js + L"\" \"" + exe_dir + L"\"";
+  PROCESS_INFORMATION pi = {};
+  BOOL ok = CreateProcessW(
+      nullptr,
+      &cmd[0],
+      nullptr,
+      nullptr,
+      log_handle != INVALID_HANDLE_VALUE ? TRUE : FALSE,
+      CREATE_NO_WINDOW,
+      nullptr,
+      exe_dir.c_str(),
+      &si,
+      &pi);
+
+  if (log_handle != INVALID_HANDLE_VALUE) {
+    CloseHandle(log_handle);
+  }
+
+  if (ok) {
+    if (backend_job_) {
+      AssignProcessToJobObject(backend_job_, pi.hProcess);
+    }
+    CloseHandle(pi.hThread);
+    backend_process_ = pi.hProcess;
+  }
+}
+
+void FlutterWindow::StopBundledBackend() {
+  if (backend_process_) {
+    TerminateProcess(backend_process_, 0);
+    CloseHandle(backend_process_);
+    backend_process_ = nullptr;
+  }
+  if (backend_job_) {
+    CloseHandle(backend_job_);
+    backend_job_ = nullptr;
+  }
 }
 
 void FlutterWindow::SetupWindowChannel() {
@@ -107,10 +221,12 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
 
+  StartBundledBackend();
+
   HWND hwnd = GetHandle();
   ApplyFramelessBackdrop(hwnd);
   SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
-               SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+               SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 
   RECT frame = GetClientArea();
 
@@ -140,6 +256,7 @@ void FlutterWindow::OnDestroy() {
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
+  StopBundledBackend();
 
   Win32Window::OnDestroy();
 }
@@ -169,9 +286,10 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
             params->rgrc[0] = info.rcWork;
           }
         }
-        return 0;
       }
-      break;
+      return 0;
+    case WM_NCACTIVATE:
+      return TRUE;
     case WM_NCHITTEST: {
       RECT rect;
       GetWindowRect(hwnd, &rect);
@@ -190,7 +308,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       if (right) return HTRIGHT;
       if (top) return HTTOP;
       if (bottom) return HTBOTTOM;
-      break;
+      return HTCLIENT;
     }
     case WM_FONTCHANGE:
       if (flutter_controller_) {
