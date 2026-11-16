@@ -1,0 +1,171 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    background: transparent !important;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+}
+
+/* =========================================================================
+   Ripple Wave Spread Animation (Material / macOS Fluid Ripple)
+   ========================================================================= */
+.ripple-host {
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.ripple-wave {
+  position: absolute;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.1);
+  transform: scale(0);
+  animation: rippleSpread 0.5s cubic-bezier(0.1, 0.8, 0.25, 1) forwards;
+  pointer-events: none;
+}
+
+@keyframes rippleSpread {
+  0% {
+    transform: scale(0);
+    opacity: 0.35;
+  }
+  100% {
+    transform: scale(2.5);
+    opacity: 0;
+  }
+}
+
+/* =========================================================================
+   Silky Smooth Page Transitions
+   ========================================================================= */
+@keyframes pageFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: pageFadeIn 0.24s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: opacity, transform;
+}
+
+/* =========================================================================
+   Component Styles (No black buttons, transparent & soft gray states)
+   ========================================================================= */
+@layer components {
+  /* Surface */
+  .surface-clean {
+    @apply bg-white/80 backdrop-blur-md shadow-soft transition-all duration-200;
+  }
+  .surface-hover {
+    @apply surface-clean hover:bg-white/95 hover:shadow-soft-hover;
+  }
+
+  /* Seamless Transparent/Gray Inputs */
+  .input {
+    @apply bg-black/[0.04] text-neutral-900 placeholder-neutral-400 rounded-2xl px-4 py-2.5 outline-none focus:bg-black/[0.06] transition-all border-0;
+  }
+
+  /* Buttons: Transparent / Soft Gray / NO Black */
+  .btn-primary {
+    @apply bg-neutral-200/80 hover:bg-neutral-300/80 active:bg-neutral-400/70 text-neutral-900 font-semibold px-5 py-2.5 rounded-full transition-all inline-flex items-center justify-center gap-2 active:scale-[0.98];
+  }
+  .btn-secondary {
+    @apply bg-black/[0.04] hover:bg-black/[0.08] active:bg-black/[0.12] text-neutral-800 font-medium px-5 py-2.5 rounded-full transition-all inline-flex items-center justify-center gap-2 active:scale-[0.98];
+  }
+  .btn-danger {
+    @apply bg-rose-50 hover:bg-rose-100 text-rose-600 font-medium px-5 py-2.5 rounded-full transition-all inline-flex items-center justify-center gap-2 active:scale-[0.98];
+  }
+  .btn-ghost {
+    @apply bg-transparent hover:bg-black/[0.04] text-neutral-700 px-3.5 py-2 rounded-full transition-all inline-flex items-center justify-center gap-2 active:scale-[0.98];
+  }
+
+  /* Badges */
+  .badge {
+    @apply text-xs px-3 py-1 rounded-full font-medium inline-flex items-center gap-1.5;
+  }
+  .badge-green {
+    @apply bg-emerald-50 text-emerald-700;
+  }
+  .badge-yellow {
+    @apply bg-amber-50 text-amber-700;
+  }
+  .badge-red {
+    @apply bg-rose-50 text-rose-700;
+  }
+  .badge-gray {
+    @apply bg-black/[0.05] text-neutral-600;
+  }
+  .badge-blue {
+    @apply bg-sky-50 text-sky-700;
+  }
+
+  .status-dot {
+    @apply w-2 h-2 rounded-full;
+  }
+  .status-running {
+    @apply bg-emerald-500 animate-pulse;
+  }
+  .status-stopped {
+    @apply bg-neutral-400;
+  }
+  .status-starting {
+    @apply bg-amber-500 animate-pulse;
+  }
+  .status-crashed {
+    @apply bg-rose-500;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.18);
+}
+
+/* Terminal (clean translucent container) */
+.terminal {
+  @apply bg-neutral-900/95 text-neutral-100 font-mono text-[13px] p-5 rounded-2xl overflow-y-auto leading-relaxed shadow-inner;
+  max-height: 520px;
+}
+.terminal-line {
+  @apply py-0.5;
+}
+.terminal-error {
+  @apply text-rose-400;
+}
+.terminal-info {
+  @apply text-sky-400;
+}
+.terminal-warn {
+  @apply text-amber-400;
+}
+
+/* Selection */
+::selection {
+  @apply bg-black/[0.08] text-neutral-900;
+}

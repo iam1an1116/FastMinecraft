@@ -1,0 +1,20 @@
+{
+  "name": "fast-minecraft",
+  "version": "1.0.0-beta2",
+  "private": true,
+  "workspaces": ["backend", "frontend", "electron"],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "start": "cd backend && npm start",
+    "electron:dev": "cd electron && npm run dev",
+    "electron:build": "cd electron && npm run build",
+    "flutter": "export PATH=\"$HOME/flutter/bin:$PATH\" && cd flutter_app && flutter run -d macos",
+    "flutter:app": "open flutter_app/build/macos/Build/Products/Debug/fast_minecraft.app"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

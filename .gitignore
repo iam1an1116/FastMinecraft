@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Build outputs
+frontend/dist/
+electron/dist/
+electron/out/
+flutter_app/build/
+flutter_app/.dart_tool/
+flutter_app/windows/flutter/ephemeral/
+flutter_app/macos/Flutter/ephemeral/
+flutter_app/.flutter-plugins*
+
+# Runtime data
+database/
+instances/
+downloads/
+java/
+backups/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary files
+icon.iconset/
+*.tmp
+*.temp
+
+# Environment
+.env
+.env.local
+.env.*.local

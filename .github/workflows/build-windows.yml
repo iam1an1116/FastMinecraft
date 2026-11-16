@@ -1,0 +1,68 @@
+name: Build Windows Desktop
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.5'
+          channel: 'stable'
+          cache: true
+
+      - name: Install backend production dependencies
+        shell: pwsh
+        run: |
+          cd backend
+          npm install --omit=dev
+
+      - name: Build Flutter Windows Release
+        shell: pwsh
+        run: |
+          flutter config --enable-windows-desktop
+          cd flutter_app
+          flutter pub get
+          flutter build windows --release
+
+      - name: Package Windows Portable Bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist_windows | Out-Null
+          Copy-Item -Recurse -Force flutter_app/build/windows/x64/runner/Release/* dist_windows/
+          New-Item -ItemType Directory -Force -Path dist_windows/backend | Out-Null
+          Copy-Item -Recurse -Force backend/src dist_windows/backend/
+          Copy-Item -Recurse -Force backend/node_modules dist_windows/backend/
+          Copy-Item -Force backend/package.json dist_windows/backend/
+
+          $bat = @'
+          @echo off
+          cd /d "%~dp0"
+          set PORT=3001
+          set FM_DATA_DIR=%~dp0
+          start "" /B node backend\src\index.js "%~dp0"
+          timeout /t 2 /nobreak >nul
+          start "" fast_minecraft.exe
+          '@
+          Set-Content -Path dist_windows/Start_FastMinecraft.bat -Value $bat -Encoding ASCII
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FastMinecraft-Windows-x64
+          path: dist_windows/
+          retention-days: 30
