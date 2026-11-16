@@ -2,10 +2,12 @@
 
 #include <commdlg.h>
 #include <dwmapi.h>
+#include <uxtheme.h>
 #include <windowsx.h>
 
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
