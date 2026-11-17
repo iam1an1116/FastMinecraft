@@ -1,9 +1,28 @@
-import { existsSync, mkdirSync, statSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from 'fs';
+import { basename, join } from 'path';
 import AdmZip from 'adm-zip';
 import { v4 as uuid } from 'uuid';
 import { getDb } from '../../database/init.js';
-import { BACKUPS_DIR, INSTANCES_DIR } from '../../utils/paths.js';
+import { BACKUPS_DIR, resolveServerDir } from '../../utils/paths.js';
+
+function getWorldName(serverDir) {
+  const propsPath = join(serverDir, 'server.properties');
+  if (existsSync(propsPath)) {
+    try {
+      const content = readFileSync(propsPath, 'utf-8');
+      for (const line of content.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eq = trimmed.indexOf('=');
+        if (eq > 0 && trimmed.slice(0, eq).trim() === 'level-name') {
+          const val = basename(trimmed.slice(eq + 1).trim());
+          if (val) return val;
+        }
+      }
+    } catch {}
+  }
+  return 'world';
+}
 
 export class BackupManager {
   static create(serverId, type = 'world') {
@@ -11,7 +30,7 @@ export class BackupManager {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
     if (!server) throw new Error('Server not found');
 
-    const serverDir = join(INSTANCES_DIR, serverId);
+    const serverDir = resolveServerDir(server, serverId);
     const backupId = uuid();
     const backupDir = join(BACKUPS_DIR, serverId);
     mkdirSync(backupDir, { recursive: true });
@@ -22,9 +41,10 @@ export class BackupManager {
     const zip = new AdmZip();
 
     if (type === 'world' || type === 'full') {
-      const worldDir = join(serverDir, 'world');
+      const worldName = getWorldName(serverDir);
+      const worldDir = join(serverDir, worldName);
       if (existsSync(worldDir)) {
-        zip.addLocalFolder(worldDir, 'world');
+        zip.addLocalFolder(worldDir, worldName);
       }
     }
     if (type === 'plugin' || type === 'full') {
@@ -62,11 +82,11 @@ export class BackupManager {
 
     // Prevent restoring while server is running to avoid world corruption
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(backup.server_id);
-    if (server && server.status === 'running') {
+    if (server && (server.status === 'running' || server.status === 'starting')) {
       throw new Error('Server must be stopped before restoring a backup');
     }
 
-    const serverDir = join(INSTANCES_DIR, backup.server_id);
+    const serverDir = resolveServerDir(server, backup.server_id);
     const zip = new AdmZip(backup.file_path);
     zip.extractAllTo(serverDir, true);
 

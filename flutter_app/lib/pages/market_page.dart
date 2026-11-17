@@ -117,6 +117,7 @@ class _MarketPageState extends State<MarketPage> {
   String _gamemode = 'survival';
   bool _onlineMode = true;
   bool _deploying = false;
+  String? _errorText;
 
   // Upload tab state
   String? _uploadFilePath;
@@ -169,12 +170,16 @@ class _MarketPageState extends State<MarketPage> {
 
   Future<void> _toggleExpand(MarketItem item) async {
     if (_expandedItemId == item.id) {
-      setState(() => _expandedItemId = null);
+      setState(() {
+        _expandedItemId = null;
+        _errorText = null;
+      });
       return;
     }
 
     setState(() {
       _expandedItemId = item.id;
+      _errorText = null;
       _loadingVersions = true;
       _versions = [];
       _modpackVersions = [];
@@ -215,7 +220,10 @@ class _MarketPageState extends State<MarketPage> {
 
   Future<void> _deployItem(MarketItem item) async {
     final name = _nameCtrl.text.trim().isEmpty ? item.title : _nameCtrl.text.trim();
-    setState(() => _deploying = true);
+    setState(() {
+      _deploying = true;
+      _errorText = null;
+    });
     bool ok = false;
 
     if (item.category == 'core') {
@@ -241,7 +249,12 @@ class _MarketPageState extends State<MarketPage> {
     }
 
     if (mounted) {
-      setState(() => _deploying = false);
+      setState(() {
+        _deploying = false;
+        if (!ok) {
+          _errorText = ApiService.lastError ?? '部署失败，请检查名称或网络后重试';
+        }
+      });
       if (ok) widget.onDeployed();
     }
   }
@@ -327,6 +340,7 @@ class _MarketPageState extends State<MarketPage> {
                     onChanged: (idx) => setState(() {
                       _filterIndex = idx;
                       _expandedItemId = null;
+                      _errorText = null;
                     }),
                     itemPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                     borderRadius: 15,
@@ -342,6 +356,29 @@ class _MarketPageState extends State<MarketPage> {
                     const CupertinoActivityIndicator(radius: 8),
                 ],
               ),
+              if (_errorText != null) ...[
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE11D48).withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(CupertinoIcons.exclamationmark_triangle_fill, size: 13, color: Color(0xFFE11D48)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _errorText!,
+                          style: const TextStyle(fontSize: 12, color: Color(0xFF9F1239), fontWeight: FontWeight.w500),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 10),
 
               // Content List or Upload View
@@ -788,7 +825,10 @@ class _MarketPageState extends State<MarketPage> {
                 onTap: (_deploying || _uploadFilePath == null)
                     ? null
                     : () async {
-                        setState(() => _deploying = true);
+                        setState(() {
+                          _deploying = true;
+                          _errorText = null;
+                        });
                         final ok = await ApiService.uploadCustomServer(
                           filePath: _uploadFilePath!,
                           name: _uploadNameCtrl.text.trim().isEmpty ? 'custom-server' : _uploadNameCtrl.text.trim(),
@@ -797,7 +837,12 @@ class _MarketPageState extends State<MarketPage> {
                           onlineMode: _onlineMode,
                         );
                         if (mounted) {
-                          setState(() => _deploying = false);
+                          setState(() {
+                            _deploying = false;
+                            if (!ok) {
+                              _errorText = ApiService.lastError ?? '上传失败，请检查文件后重试';
+                            }
+                          });
                           if (ok) widget.onDeployed();
                         }
                       },

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync, unlinkSync, renameSy
 import { join, basename } from 'path';
 import { v4 as uuid } from 'uuid';
 import { getDb } from '../../database/init.js';
-import { INSTANCES_DIR } from '../../utils/paths.js';
+import { resolveServerDir, decodeUploadFilename } from '../../utils/paths.js';
 
 export class ModManager {
   static list(serverId) {
@@ -13,7 +13,7 @@ export class ModManager {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
     if (!server) return dbMods;
 
-    const serverDir = server.path || join(INSTANCES_DIR, serverId);
+    const serverDir = resolveServerDir(server, serverId);
     const modDir = join(serverDir, 'mods');
 
     if (!existsSync(modDir)) return dbMods;
@@ -48,20 +48,21 @@ export class ModManager {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
     if (!server) throw new Error('Server not found');
 
-    const modDir = join(INSTANCES_DIR, serverId, 'mods');
+    const modDir = join(resolveServerDir(server, serverId), 'mods');
     mkdirSync(modDir, { recursive: true });
 
-    const fileName = basename(file.originalname);
+    const fileName = decodeUploadFilename(file.originalname);
     const filePath = join(modDir, fileName);
     writeFileSync(filePath, file.buffer);
 
+    const displayName = fileName.replace(/\.jar(\.disabled)?$/i, '');
     const id = uuid();
     db.prepare(`
       INSERT INTO mods (id, server_id, name, file_name, loader, enabled)
       VALUES (?, ?, ?, ?, ?, 1)
-    `).run(id, serverId, fileName.replace('.jar', ''), fileName, loader);
+    `).run(id, serverId, displayName, fileName, loader);
 
-    return { id, name: fileName.replace('.jar', ''), fileName, loader };
+    return { id, name: displayName, fileName, loader };
   }
 
   static toggle(serverId, modId, enabled) {
@@ -69,7 +70,7 @@ export class ModManager {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
     if (!server) throw new Error('Server not found');
 
-    const serverDir = server.path || join(INSTANCES_DIR, serverId);
+    const serverDir = resolveServerDir(server, serverId);
     const modDir = join(serverDir, 'mods');
 
     // Check database first
@@ -77,7 +78,9 @@ export class ModManager {
 
     if (!mod) {
       // Might be a file-based mod, find by filename
-      const files = readdirSync(modDir).filter(f => f.endsWith('.jar') || f.endsWith('.jar.disabled'));
+      const files = existsSync(modDir)
+        ? readdirSync(modDir).filter(f => f.endsWith('.jar') || f.endsWith('.jar.disabled'))
+        : [];
       const matchFile = files.find(f => f === modId || f.replace('.jar.disabled', '').replace('.jar', '') === modId);
       if (!matchFile) throw new Error('Mod not found');
 
@@ -91,10 +94,10 @@ export class ModManager {
 
     const oldPath = join(modDir, mod.file_name);
     const newPath = enabled
-      ? oldPath.replace('.jar.disabled', '.jar')
-      : oldPath.replace('.jar', '.jar.disabled');
+      ? oldPath.replace(/\.jar\.disabled$/i, '.jar')
+      : oldPath.replace(/\.jar$/i, '.jar.disabled');
 
-    if (existsSync(oldPath)) {
+    if (existsSync(oldPath) && oldPath !== newPath) {
       renameSync(oldPath, newPath);
     }
 
@@ -109,7 +112,7 @@ export class ModManager {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
     if (!server) throw new Error('Server not found');
 
-    const serverDir = server.path || join(INSTANCES_DIR, serverId);
+    const serverDir = resolveServerDir(server, serverId);
     const modDir = join(serverDir, 'mods');
 
     // Check database first
@@ -117,7 +120,9 @@ export class ModManager {
 
     if (!mod) {
       // Might be a file-based mod
-      const files = readdirSync(modDir).filter(f => f.endsWith('.jar') || f.endsWith('.jar.disabled'));
+      const files = existsSync(modDir)
+        ? readdirSync(modDir).filter(f => f.endsWith('.jar') || f.endsWith('.jar.disabled'))
+        : [];
       const matchFile = files.find(f => f === modId || f.replace('.jar.disabled', '').replace('.jar', '') === modId);
       if (!matchFile) throw new Error('Mod not found');
 

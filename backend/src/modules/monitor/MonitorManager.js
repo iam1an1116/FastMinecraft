@@ -1,30 +1,71 @@
 import os from 'os';
-import { execSync } from 'child_process';
+import { execSync, execFile } from 'child_process';
 import { broadcast } from '../../websocket/handler.js';
 import { ServerManager } from '../server/ServerManager.js';
 
-const statsCache = new Map(); // serverId -> { tps, mspt, players, chunks, entities }
+const statsCache = new Map(); // serverId -> { tps, mspt, players, chunks, entities, proc }
 const playerCache = new Map(); // serverId -> Map<playerName, { name, ip, ping, joinTime }>
 const monitorIntervals = new Map(); // serverId -> interval
+const winSamplePending = new Set();
+
+function sampleWindowsStatsAsync(serverId, pid, maxMemoryMB) {
+  if (winSamplePending.has(serverId)) return;
+  winSamplePending.add(serverId);
+  const psCmd = `$p=Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if($p){"$($p.WorkingSet64),$($p.CPU)"}`;
+  execFile(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', psCmd],
+    { encoding: 'utf8', timeout: 2500, windowsHide: true },
+    (err, stdout) => {
+      winSamplePending.delete(serverId);
+      if (err || !stdout) return;
+      const parts = stdout.trim().split(',');
+      const wsBytes = parseInt(parts[0], 10) || 0;
+      const cpuSecs = parseFloat(parts[1]) || 0;
+      const now = Date.now();
+      const cached = statsCache.get(serverId) || {};
+      const prev = cached.procSample;
+      let cpuPercent = 0;
+      if (prev && cpuSecs >= prev.cpuSecs && now > prev.ts) {
+        const elapsedSecs = (now - prev.ts) / 1000;
+        const cores = Math.max(1, os.cpus().length);
+        cpuPercent = Math.min(100, Math.round((((cpuSecs - prev.cpuSecs) / elapsedSecs) / cores) * 10000) / 100);
+      }
+      const memoryUsed = Math.round(wsBytes / (1024 * 1024));
+      cached.procSample = { cpuSecs, ts: now };
+      cached.proc = {
+        cpu: cpuPercent,
+        memoryUsed,
+        memory: memoryUsed,
+        memoryTotal: maxMemoryMB,
+        memoryPercent: maxMemoryMB > 0 ? Math.round((memoryUsed / maxMemoryMB) * 10000) / 100 : 0,
+      };
+      statsCache.set(serverId, cached);
+    }
+  );
+}
 
 export class MonitorManager {
-  // Get CPU and memory of a specific Java process by PID
-  static getProcessStats(pid, maxMemoryMB) {
+  static getProcessStats(pid, maxMemoryMB, serverId = null) {
+    if (process.platform === 'win32') {
+      if (serverId) sampleWindowsStatsAsync(serverId, pid, maxMemoryMB);
+      return (serverId && statsCache.get(serverId)?.proc) || null;
+    }
+
     try {
-      // ps -p PID -o %cpu,rss returns "CPU   RSS" like "12.3  524288"
       const output = execSync(`ps -p ${pid} -o %cpu,rss`, { encoding: 'utf-8' });
       const lines = output.trim().split('\n');
       if (lines.length < 2) return null;
       const parts = lines[1].trim().split(/\s+/);
       const rawCpu = parseFloat(parts[0]) || 0;
       const rssKB = parseInt(parts[1]) || 0;
-      const memoryUsed = Math.round(rssKB / 1024); // KB -> MB
-      // Normalize CPU: ps reports per-core %, divide by core count to get 0-100%
-      const cpuCores = os.cpus().length;
+      const memoryUsed = Math.round(rssKB / 1024);
+      const cpuCores = Math.max(1, os.cpus().length);
       const cpu = Math.min(Math.round((rawCpu / cpuCores) * 100) / 100, 100);
       return {
         cpu,
         memoryUsed,
+        memory: memoryUsed,
         memoryTotal: maxMemoryMB,
         memoryPercent: maxMemoryMB > 0 ? Math.round((memoryUsed / maxMemoryMB) * 100 * 100) / 100 : 0
       };
@@ -37,16 +78,16 @@ export class MonitorManager {
     const cached = statsCache.get(serverId) || {};
     const players = playerCache.get(serverId);
 
-    // Get process-specific stats
     const child = ServerManager.processes.get(serverId);
     let processStats = null;
     if (child && child.pid) {
-      processStats = this.getProcessStats(child.pid, cached.maxMemory || 2048);
+      processStats = this.getProcessStats(child.pid, cached.maxMemory || 2048, serverId);
     }
 
     const sys = processStats || {
       cpu: 0,
       memoryUsed: 0,
+      memory: 0,
       memoryTotal: cached.maxMemory || 2048,
       memoryPercent: 0
     };

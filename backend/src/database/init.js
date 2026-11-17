@@ -1,5 +1,5 @@
 import initSqlJs from 'sql.js';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { DB_DIR } from '../utils/paths.js';
 
@@ -64,7 +64,13 @@ function saveDb() {
   if (!db) return;
   const data = db._db.export();
   const buffer = Buffer.from(data);
-  writeFileSync(DB_PATH, buffer);
+  const tmpPath = `${DB_PATH}.tmp`;
+  try {
+    writeFileSync(tmpPath, buffer);
+    renameSync(tmpPath, DB_PATH);
+  } catch {
+    writeFileSync(DB_PATH, buffer);
+  }
 }
 
 export async function initDatabase() {
@@ -166,6 +172,12 @@ export async function initDatabase() {
       address TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+  `);
+
+  // Reset stale transient states left behind by an unexpected process exit
+  db.exec(`
+    UPDATE servers SET status = 'stopped' WHERE status IN ('running', 'starting');
+    UPDATE servers SET status = 'error' WHERE status = 'downloading';
   `);
 
   saveDb();

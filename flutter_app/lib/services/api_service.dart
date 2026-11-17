@@ -162,11 +162,32 @@ class ApiService {
     return {'status': 'idle'};
   }
 
+  static String? lastError;
+
+  static String _extractError(http.Response res, String fallback) {
+    try {
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map) {
+        final msg = decoded['error'] ?? decoded['message'];
+        if (msg != null && msg.toString().trim().isNotEmpty) {
+          return msg.toString();
+        }
+      }
+    } catch (_) {}
+    return fallback;
+  }
+
   static Future<bool> startServer(String id) async {
     try {
       final res = await http.post(Uri.parse('$baseUrl/servers/$id/start'), headers: defaultHeaders);
-      return res.statusCode == 200;
+      if (res.statusCode == 200) {
+        lastError = null;
+        return true;
+      }
+      lastError = _extractError(res, '启动服务器失败 (${res.statusCode})');
+      return false;
     } catch (_) {
+      lastError = '无法连接本地服务';
       return false;
     }
   }
@@ -174,8 +195,14 @@ class ApiService {
   static Future<bool> stopServer(String id) async {
     try {
       final res = await http.post(Uri.parse('$baseUrl/servers/$id/stop'), headers: defaultHeaders);
-      return res.statusCode == 200;
+      if (res.statusCode == 200) {
+        lastError = null;
+        return true;
+      }
+      lastError = _extractError(res, '停止服务器失败');
+      return false;
     } catch (_) {
+      lastError = '无法连接本地服务';
       return false;
     }
   }
@@ -183,8 +210,14 @@ class ApiService {
   static Future<bool> forceStopServer(String id) async {
     try {
       final res = await http.post(Uri.parse('$baseUrl/servers/$id/force-stop'), headers: defaultHeaders);
-      return res.statusCode == 200;
+      if (res.statusCode == 200) {
+        lastError = null;
+        return true;
+      }
+      lastError = _extractError(res, '强制停止失败');
+      return false;
     } catch (_) {
+      lastError = '无法连接本地服务';
       return false;
     }
   }
@@ -192,8 +225,14 @@ class ApiService {
   static Future<bool> restartServer(String id) async {
     try {
       final res = await http.post(Uri.parse('$baseUrl/servers/$id/restart'), headers: defaultHeaders);
-      return res.statusCode == 200;
+      if (res.statusCode == 200) {
+        lastError = null;
+        return true;
+      }
+      lastError = _extractError(res, '重启服务器失败');
+      return false;
     } catch (_) {
+      lastError = '无法连接本地服务';
       return false;
     }
   }
@@ -228,8 +267,14 @@ class ApiService {
           if (onlineMode != null) 'onlineMode': onlineMode,
         }),
       );
-      return res.statusCode == 200 || res.statusCode == 201;
+      if (res.statusCode == 200 || res.statusCode == 201) {
+        lastError = null;
+        return true;
+      }
+      lastError = _extractError(res, '创建服务器失败');
+      return false;
     } catch (_) {
+      lastError = '无法连接本地服务';
       return false;
     }
   }
@@ -250,8 +295,20 @@ class ApiService {
       if (onlineMode != null) req.fields['onlineMode'] = onlineMode.toString();
       req.files.add(await http.MultipartFile.fromPath('serverJar', filePath));
       final streamed = await req.send();
-      return streamed.statusCode == 200 || streamed.statusCode == 201;
-    } catch (_) {
+      if (streamed.statusCode == 200 || streamed.statusCode == 201) {
+        lastError = null;
+        return true;
+      }
+      final body = await streamed.stream.bytesToString();
+      try {
+        final decoded = jsonDecode(body);
+        lastError = decoded is Map ? (decoded['error']?.toString() ?? '上传失败') : '上传失败';
+      } catch (_) {
+        lastError = '上传失败 (${streamed.statusCode})';
+      }
+      return false;
+    } catch (e) {
+      lastError = '上传失败: $e';
       return false;
     }
   }
@@ -289,8 +346,14 @@ class ApiService {
         headers: defaultHeaders,
         body: jsonEncode(props),
       );
-      return res.statusCode == 200;
+      if (res.statusCode == 200) {
+        lastError = null;
+        return true;
+      }
+      lastError = _extractError(res, '保存配置失败');
+      return false;
     } catch (_) {
+      lastError = '无法连接本地服务';
       return false;
     }
   }
@@ -360,8 +423,14 @@ class ApiService {
           if (onlineMode != null) 'onlineMode': onlineMode,
         }),
       );
-      return res.statusCode == 200 || res.statusCode == 201;
+      if (res.statusCode == 200 || res.statusCode == 201) {
+        lastError = null;
+        return true;
+      }
+      lastError = _extractError(res, '部署整合包失败');
+      return false;
     } catch (_) {
+      lastError = '无法连接本地服务';
       return false;
     }
   }
@@ -493,8 +562,14 @@ class ApiService {
   static Future<bool> restoreBackup(String id, String bid) async {
     try {
       final res = await http.post(Uri.parse('$baseUrl/servers/$id/backups/$bid/restore'), headers: defaultHeaders);
-      return res.statusCode == 200;
+      if (res.statusCode == 200) {
+        lastError = null;
+        return true;
+      }
+      lastError = _extractError(res, '恢复备份失败');
+      return false;
     } catch (_) {
+      lastError = '无法连接本地服务';
       return false;
     }
   }

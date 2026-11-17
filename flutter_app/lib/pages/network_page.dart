@@ -139,6 +139,7 @@ class _NetworkPageState extends State<NetworkPage> {
                     onChanged: (idx) {
                       setState(() => _modeIndex = idx);
                       if (idx == 1) _runIpv6Diag();
+                      if (idx == 2) _refreshP2pStatus();
                     },
                     itemPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                     borderRadius: 16,

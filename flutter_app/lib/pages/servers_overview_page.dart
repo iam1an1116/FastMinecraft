@@ -169,9 +169,15 @@ class _ServersOverviewPageState extends State<ServersOverviewPage> {
     } else if (s.isStarting) {
       statusDotColor = const Color(0xFFF59E0B);
       statusText = '启动中';
-    } else if (s.status == 'downloading') {
+    } else if (s.isDownloading) {
       statusDotColor = const Color(0xFF0EA5E9);
       statusText = '下载中';
+    } else if (s.isError) {
+      statusDotColor = const Color(0xFFE11D48);
+      statusText = '部署失败';
+    } else if (s.isCrashed) {
+      statusDotColor = const Color(0xFFE11D48);
+      statusText = '已崩溃';
     } else {
       statusDotColor = Colors.black.withOpacity(0.32);
       statusText = '已停止';
@@ -235,11 +241,15 @@ class _ServersOverviewPageState extends State<ServersOverviewPage> {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      '${s.version} · ${s.serverType} · ${s.port} · ${s.maxMemory}MB',
+                      s.isError && s.downloadError != null
+                          ? '${s.version} · ${s.downloadError}'
+                          : '${s.version} · ${s.serverType} · ${s.port} · ${s.maxMemory}MB',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w500,
-                        color: Colors.black.withOpacity(0.42),
+                        color: s.isError ? const Color(0xFFE11D48) : Colors.black.withOpacity(0.42),
                         fontFamily: WindowService.monoFont,
                       ),
                     ),

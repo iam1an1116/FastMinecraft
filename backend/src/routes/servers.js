@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { execFile } from 'child_process';
 import multer from 'multer';
 import { join } from 'path';
 import { renameSync, unlinkSync, copyFileSync } from 'fs';
@@ -6,6 +7,7 @@ import AdmZip from 'adm-zip';
 import os from 'os';
 import { ServerManager } from '../modules/server/ServerManager.js';
 import { downloadServer, deployModpack } from '../modules/version/VersionDownloader.js';
+import { resolveServerDir, decodeUploadFilename } from '../utils/paths.js';
 
 const router = Router();
 
@@ -15,8 +17,8 @@ const storage = multer.diskStorage({
     cb(null, os.tmpdir());
   },
   filename: (req, file, cb) => {
-    // Keep the original filename
-    cb(null, file.originalname);
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    cb(null, `fm-upload-${unique}.tmp`);
   }
 });
 
@@ -240,7 +242,9 @@ router.post('/upload', upload.single('serverJar'), async (req, res) => {
 
     // Move uploaded file to server directory
     // Use copyFile + unlink instead of renameSync to avoid cross-device EXDEV on Windows
-    const destPath = join(server.path, file.originalname);
+    const serverDir = resolveServerDir(server);
+    const originalName = decodeUploadFilename(file.originalname);
+    const destPath = join(serverDir, originalName);
     try {
       renameSync(file.path, destPath);
     } catch (e) {
@@ -253,41 +257,31 @@ router.post('/upload', upload.single('serverJar'), async (req, res) => {
     }
 
     // For zip files: respond immediately, extract in background so UI isn't stuck
-    if (file.originalname.endsWith('.zip')) {
-      console.log(`Extracting zip: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+    if (originalName.toLowerCase().endsWith('.zip')) {
+      console.log(`Extracting zip: ${originalName} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
       res.status(201).json(server);
 
       // Defer extraction to next tick — don't block the event loop
-      setImmediate(async () => {
+      setImmediate(() => {
         try {
+          const onExtracted = (err) => {
+            if (err) {
+              console.log('Native extract failed, using AdmZip:', err.message);
+              extractWithAdmZip(destPath, serverDir, server.id);
+              return;
+            }
+            console.log('Extracted archive successfully');
+            try { unlinkSync(destPath); } catch {}
+            try { ServerManager.unwrapSingleSubdir(serverDir); } catch {}
+            ServerManager.setDownloadComplete(server.id);
+          };
+
           if (process.platform === 'win32') {
-            // Try Windows built-in tar first, fallback to AdmZip
-            const { exec } = await import('child_process');
-            exec(`tar -xf "${destPath}" -C "${server.path}"`, { timeout: 120000 }, (err) => {
-              if (err) {
-                console.log('tar failed, using AdmZip:', err.message);
-                extractWithAdmZip(destPath, server.path, server.id);
-              } else {
-                console.log('Extracted via tar');
-                try { unlinkSync(destPath); } catch {}
-                ServerManager.setDownloadComplete(server.id);
-              }
-            });
+            execFile('tar', ['-xf', destPath, '-C', serverDir], { timeout: 120000, windowsHide: true }, onExtracted);
+          } else if (process.platform === 'darwin') {
+            execFile('ditto', ['-x', '-k', destPath, serverDir], { timeout: 120000 }, onExtracted);
           } else {
-            const { exec } = await import('child_process');
-            const cmd = process.platform === 'darwin'
-              ? `ditto -x -k "${destPath}" "${server.path}"`
-              : `unzip -oq "${destPath}" -d "${server.path}"`;
-            exec(cmd, { timeout: 120000 }, (err) => {
-              if (err) {
-                console.log('native extract failed, using AdmZip:', err.message);
-                extractWithAdmZip(destPath, server.path, server.id);
-              } else {
-                console.log('Extracted via native tool');
-                try { unlinkSync(destPath); } catch {}
-                ServerManager.setDownloadComplete(server.id);
-              }
-            });
+            execFile('unzip', ['-oq', destPath, '-d', serverDir], { timeout: 120000 }, onExtracted);
           }
         } catch (err) {
           console.error('Extraction error:', err);
@@ -299,7 +293,7 @@ router.post('/upload', upload.single('serverJar'), async (req, res) => {
 
     // Non-zip: mark as ready
     ServerManager.setDownloadComplete(server.id);
-    console.log(`Server ${server.id} created with custom file: ${file.originalname}`);
+    console.log(`Server ${server.id} created with custom file: ${originalName}`);
     res.status(201).json(server);
   } catch (err) {
     console.error('Upload error:', err);
@@ -313,6 +307,7 @@ function extractWithAdmZip(zipPath, destDir, serverId) {
       const zip = new AdmZip(zipPath);
       zip.extractAllTo(destDir, true);
       unlinkSync(zipPath);
+      try { ServerManager.unwrapSingleSubdir(destDir); } catch {}
       console.log('Extracted via AdmZip');
       ServerManager.setDownloadComplete(serverId);
     } catch (err) {

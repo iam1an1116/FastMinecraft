@@ -31,6 +31,8 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
   final TextEditingController _cmdController = TextEditingController();
 
   late String _status;
+  late int _currentPort;
+  String? _errorMessage;
   Map<String, dynamic>? _stats;
   List<dynamic> _players = [];
   List<dynamic> _mods = [];
@@ -46,6 +48,8 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
   void initState() {
     super.initState();
     _status = widget.server.status;
+    _currentPort = widget.server.port;
+    _errorMessage = widget.server.downloadError;
     _wsService.connect(widget.server.id);
     _wsService.logStream.listen((line) {
       if (!mounted) return;
@@ -92,6 +96,8 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
     if (oldWidget.server.id != widget.server.id) {
       _logs.clear();
       _status = widget.server.status;
+      _currentPort = widget.server.port;
+      _errorMessage = widget.server.downloadError;
       _wsService.connect(widget.server.id);
       _loadLogsHistory();
       _refreshStatusAndStats();
@@ -107,7 +113,15 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
     if (mounted) {
       setState(() {
         if (s != null) _stats = s;
-        if (info != null) _status = info.status;
+        if (info != null) {
+          _status = info.status;
+          _currentPort = info.port;
+          if (info.downloadError != null) {
+            _errorMessage = info.downloadError;
+          } else if (info.isRunning || info.isStopped) {
+            // Clear stale download error once recovered/stopped unless set by user action
+          }
+        }
       });
     }
   }
@@ -163,8 +177,18 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
   }
 
   Future<void> _powerAction(Future<bool> Function(String) fn) async {
-    setState(() => _actionLoading = true);
-    await fn(widget.server.id);
+    setState(() {
+      _actionLoading = true;
+      _errorMessage = null;
+    });
+    final ok = await fn(widget.server.id);
+    if (!ok && mounted) {
+      final err = ApiService.lastError ?? '操作失败';
+      setState(() {
+        _errorMessage = err;
+        _logs.add('[错误] $err');
+      });
+    }
     await _refreshStatusAndStats();
     if (mounted) setState(() => _actionLoading = false);
   }
@@ -206,10 +230,11 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
 
   Widget _buildStatsBar() {
     final cpu = _stats?['cpu'] ?? 0;
-    final ram = _stats?['memory'] ?? 0;
+    final ram = _stats?['memoryUsed'] ?? _stats?['memory'] ?? 0;
     final tps = _stats?['tps'] ?? 20.0;
     final bool isRunning = _status == 'running';
     final bool isStarting = _status == 'starting';
+    final bool isDownloading = _status == 'downloading';
 
     Color statusColor = Colors.black.withOpacity(0.35);
     String statusLabel = '已停止';
@@ -219,64 +244,119 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
     } else if (isStarting) {
       statusColor = const Color(0xFFD97706);
       statusLabel = '启动中';
-    } else if (_status == 'downloading') {
+    } else if (isDownloading) {
       statusColor = const Color(0xFF0284C7);
       statusLabel = '下载中';
+    } else if (_status == 'error') {
+      statusColor = const Color(0xFFE11D48);
+      statusLabel = '部署失败';
+    } else if (_status == 'crashed') {
+      statusColor = const Color(0xFFE11D48);
+      statusLabel = '已崩溃';
     }
 
-    return Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        _buildStatItem('状态', statusLabel, statusColor),
-        const SizedBox(width: 28),
-        _buildStatItem('CPU', '$cpu%', const Color(0xFF151515)),
-        const SizedBox(width: 28),
-        _buildStatItem('内存', '$ram MB', const Color(0xFF151515)),
-        const SizedBox(width: 28),
-        _buildStatItem('TPS', '$tps', const Color(0xFF151515)),
-        const SizedBox(width: 28),
-        _buildStatItem('端口', '${widget.server.port}', const Color(0xFF151515)),
-        const Spacer(),
-        if (_actionLoading)
-          const CupertinoActivityIndicator(radius: 9)
-        else if (isRunning || isStarting) ...[
-          RippleButton(
-            onTap: () => _powerAction(ApiService.stopServer),
-            borderRadius: BorderRadius.circular(14),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(CupertinoIcons.stop_fill, size: 11, color: Color(0xFFE11D48)),
-                SizedBox(width: 5),
-                Text('停止', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFFE11D48))),
-              ],
+        Row(
+          children: [
+            _buildStatItem('状态', statusLabel, statusColor),
+            const SizedBox(width: 28),
+            _buildStatItem('CPU', '$cpu%', const Color(0xFF151515)),
+            const SizedBox(width: 28),
+            _buildStatItem('内存', '$ram MB', const Color(0xFF151515)),
+            const SizedBox(width: 28),
+            _buildStatItem('TPS', '$tps', const Color(0xFF151515)),
+            const SizedBox(width: 28),
+            _buildStatItem('端口', '$_currentPort', const Color(0xFF151515)),
+            const Spacer(),
+            if (_actionLoading)
+              const CupertinoActivityIndicator(radius: 9)
+            else if (isRunning || isStarting) ...[
+              RippleButton(
+                onTap: () => _powerAction(ApiService.stopServer),
+                borderRadius: BorderRadius.circular(14),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(CupertinoIcons.stop_fill, size: 11, color: Color(0xFFE11D48)),
+                    SizedBox(width: 5),
+                    Text('停止', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFFE11D48))),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 4),
+              RippleButton(
+                onTap: () => _powerAction(ApiService.forceStopServer),
+                borderRadius: BorderRadius.circular(14),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                child: Text('强停', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.black.withOpacity(0.55))),
+              ),
+              const SizedBox(width: 4),
+              RippleButton(
+                onTap: () => _powerAction(ApiService.restartServer),
+                borderRadius: BorderRadius.circular(14),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(CupertinoIcons.arrow_2_circlepath, size: 12, color: Color(0xFF1F1F1F)),
+                    SizedBox(width: 5),
+                    Text('重启', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF1F1F1F))),
+                  ],
+                ),
+              ),
+            ] else ...[
+              RippleButton(
+                onTap: isDownloading ? null : () => _powerAction(ApiService.startServer),
+                borderRadius: BorderRadius.circular(14),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      CupertinoIcons.play_fill,
+                      size: 11,
+                      color: isDownloading ? Colors.black.withOpacity(0.28) : const Color(0xFF059669),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      isDownloading ? '准备中' : '启动',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: isDownloading ? Colors.black.withOpacity(0.35) : const Color(0xFF059669),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+        if (_errorMessage != null && _errorMessage!.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE11D48).withOpacity(0.08),
+              borderRadius: BorderRadius.circular(10),
             ),
-          ),
-          const SizedBox(width: 4),
-          RippleButton(
-            onTap: () => _powerAction(ApiService.restartServer),
-            borderRadius: BorderRadius.circular(14),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
+            child: Row(
               children: [
-                Icon(CupertinoIcons.arrow_2_circlepath, size: 12, color: Color(0xFF1F1F1F)),
-                SizedBox(width: 5),
-                Text('重启', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF1F1F1F))),
-              ],
-            ),
-          ),
-        ] else ...[
-          RippleButton(
-            onTap: () => _powerAction(ApiService.startServer),
-            borderRadius: BorderRadius.circular(14),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(CupertinoIcons.play_fill, size: 11, color: Color(0xFF059669)),
-                SizedBox(width: 5),
-                Text('启动', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF059669))),
+                const Icon(CupertinoIcons.exclamationmark_triangle_fill, size: 13, color: Color(0xFFE11D48)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _errorMessage!,
+                    style: const TextStyle(fontSize: 12, color: Color(0xFF9F1239), fontWeight: FontWeight.w500),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ],
             ),
           ),
@@ -469,15 +549,15 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
                   separatorBuilder: (_, __) => Divider(height: 1, thickness: 0.5, color: Colors.black.withOpacity(0.045)),
                   itemBuilder: (context, i) {
                     final m = _mods[i];
-                    final id = m['id']?.toString() ?? m['filename']?.toString() ?? '';
-                    final enabled = m['enabled'] == true;
+                    final id = m['id']?.toString() ?? m['file_name']?.toString() ?? m['filename']?.toString() ?? '';
+                    final enabled = m['enabled'] == true || m['enabled'] == 1;
                     return Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
                       child: Row(
                         children: [
                           Expanded(
                             child: Text(
-                              m['name']?.toString() ?? m['filename']?.toString() ?? 'Mod',
+                              m['name']?.toString() ?? m['file_name']?.toString() ?? m['filename']?.toString() ?? 'Mod',
                               style: TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w600,
@@ -549,19 +629,38 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
                   itemBuilder: (context, i) {
                     final b = _backups[i];
                     final bid = b['id']?.toString() ?? '';
+                    final rawType = b['type']?.toString() ?? 'world';
+                    final typeLabel = switch (rawType) {
+                      'full' => '完整备份',
+                      'plugin' => '插件备份',
+                      'config' => '配置备份',
+                      _ => '存档备份',
+                    };
+                    final sizeBytes = b['file_size'] is int
+                        ? (b['file_size'] as int)
+                        : int.tryParse(b['file_size']?.toString() ?? '') ?? 0;
+                    final sizeStr = sizeBytes > 0 ? ' · ${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB' : '';
+                    final created = b['created_at']?.toString() ?? '';
+                    final dateStr = created.length >= 16
+                        ? ' · ${created.substring(0, 16).replaceAll('T', ' ')}'
+                        : (created.isNotEmpty ? ' · $created' : '');
+                    final backupLabel = b['filename']?.toString() ?? b['name']?.toString() ?? '$typeLabel$sizeStr$dateStr';
                     return Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
                       child: Row(
                         children: [
                           Expanded(
                             child: Text(
-                              b['filename']?.toString() ?? b['name']?.toString() ?? '备份 $bid',
+                              backupLabel,
                               style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF151515)),
                             ),
                           ),
                           RippleButton(
                             onTap: () async {
-                              await ApiService.restoreBackup(widget.server.id, bid);
+                              final ok = await ApiService.restoreBackup(widget.server.id, bid);
+                              if (!ok && mounted) {
+                                setState(() => _errorMessage = ApiService.lastError ?? '恢复备份失败');
+                              }
                               _loadCurrentTabData();
                             },
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -633,13 +732,24 @@ class _ServerDetailPageState extends State<ServerDetailPage> {
                 onTap: _savingProps
                     ? null
                     : () async {
-                        setState(() => _savingProps = true);
+                        setState(() {
+                          _savingProps = true;
+                          _errorMessage = null;
+                        });
                         for (final entry in _propControllers.entries) {
                           if (entry.value.text.isNotEmpty) {
                             _properties[entry.key] = entry.value.text;
                           }
                         }
-                        await ApiService.updateServerProperties(widget.server.id, _properties);
+                        final ok = await ApiService.updateServerProperties(widget.server.id, _properties);
+                        final parsedPort = int.tryParse(_properties['server-port'] ?? '');
+                        if (parsedPort != null && parsedPort >= 1 && parsedPort <= 65535 && parsedPort != _currentPort) {
+                          await ApiService.updateServerConfig(widget.server.id, {'port': parsedPort});
+                          if (mounted) setState(() => _currentPort = parsedPort);
+                        }
+                        if (!ok && mounted) {
+                          setState(() => _errorMessage = ApiService.lastError ?? '保存配置失败');
+                        }
                         if (mounted) setState(() => _savingProps = false);
                       },
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),

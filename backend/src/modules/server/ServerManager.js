@@ -1,12 +1,14 @@
 import { spawn, execSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, appendFile } from 'fs';
-import { join, resolve } from 'path';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, renameSync, appendFile } from 'fs';
+import { join, resolve, relative } from 'path';
+import { StringDecoder } from 'string_decoder';
+import treeKill from 'tree-kill';
 import { v4 as uuid } from 'uuid';
 import { getDb } from '../../database/init.js';
 import { broadcast } from '../../websocket/handler.js';
 import { getJavaPath } from '../java/JavaManager.js';
 import { MonitorManager } from '../monitor/MonitorManager.js';
-import { INSTANCES_DIR } from '../../utils/paths.js';
+import { INSTANCES_DIR, resolveServerDir } from '../../utils/paths.js';
 
 const LOG_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_RAM_LOG_LINES = 800;
@@ -16,6 +18,7 @@ export class ServerManager {
   static processes = new Map();
   static downloadStatus = new Map(); // serverId -> { progress, status, error }
   static logBuffers = new Map(); // serverId -> Array<{ ts, line }>
+  static stoppingServers = new Set(); // serverId -> intentionally stopped
 
   static appendLog(serverId, serverDir, line) {
     const ts = Date.now();
@@ -195,8 +198,13 @@ export class ServerManager {
   }
 
   static setDownloadError(serverId, error) {
-    this.downloadStatus.set(serverId, { status: 'error', error: error.message });
-    broadcast(serverId, 'status', { status: 'error', error: error.message });
+    const message = error?.message || String(error || 'Download failed');
+    this.downloadStatus.set(serverId, { status: 'error', error: message });
+    try {
+      const db = getDb();
+      db.prepare('UPDATE servers SET status = ? WHERE id = ?').run('error', serverId);
+    } catch {}
+    broadcast(serverId, 'status', { status: 'error', error: message });
   }
 
   static findAvailablePort() {
@@ -219,14 +227,20 @@ export class ServerManager {
     // Check if still downloading
     const dlStatus = this.downloadStatus.get(serverId);
     if (dlStatus) {
+      if (dlStatus.status === 'error') {
+        throw new Error(dlStatus.error || 'Server download failed');
+      }
       throw new Error('Server is still downloading');
     }
 
-    const serverDir = server.path || join(INSTANCES_DIR,serverId);
+    const serverDir = resolveServerDir(server, serverId);
 
     if (!existsSync(serverDir)) {
       throw new Error('Server directory not found: ' + serverDir);
     }
+
+    // Unwrap single nested folder if user uploaded a zipped wrapper folder
+    this.unwrapSingleSubdir(serverDir);
 
     const launchConfig = this.findJarFile(serverDir, server.server_type);
     if (!launchConfig) throw new Error('Server jar not found in ' + serverDir);
@@ -240,18 +254,20 @@ export class ServerManager {
     // Write server.properties
     this.writeServerProperties(serverDir, server);
 
-    // Get Java path
-    const javaPath = await getJavaPath(server.version);
+    // Get Java path (pass serverDir so custom/modded packs detect required Java version)
+    const javaPath = await getJavaPath(server.version, null, serverDir);
 
     let args;
     if (launchConfig.type === 'args') {
-      // Forge/NeoForge uses @args.txt format
+      // Forge/NeoForge uses @args.txt format; relative path avoids spaces/Unicode path edge cases
+      const relArgs = relative(serverDir, launchConfig.path);
+      const argsTarget = relArgs && !relArgs.startsWith('..') ? relArgs : launchConfig.path;
       args = [
         '-Djava.awt.headless=true',
         '-Dfile.encoding=UTF-8',
         `-Xmx${server.max_memory}M`,
         `-Xms${Math.min(server.max_memory, 512)}M`,
-        `@${launchConfig.path}`,
+        `@${argsTarget}`,
         'nogui'
       ];
     } else {
@@ -266,12 +282,16 @@ export class ServerManager {
       ];
     }
 
+    this.stoppingServers.delete(serverId);
+
     const child = spawn(javaPath, args, {
       cwd: serverDir,
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true
     });
 
     this.processes.set(serverId, child);
+    child.stdin?.on('error', () => {});
 
     // Update status to starting
     db.prepare('UPDATE servers SET status = ? WHERE id = ?').run('starting', serverId);
@@ -279,43 +299,77 @@ export class ServerManager {
 
     // Track if server has fully started
     let serverStarted = false;
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    let stdoutBuf = '';
+    let stderrBuf = '';
+
+    const handleStdoutLine = (line) => {
+      if (!line) return;
+      this.appendLog(serverId, serverDir, line);
+      broadcast(serverId, 'log', { line });
+      MonitorManager.updateFromLog(serverId, line);
+
+      // Detect server fully started (Done message)
+      if (!serverStarted && line.includes('Done') && line.includes('For help')) {
+        serverStarted = true;
+        const dbNow = getDb();
+        dbNow.prepare('UPDATE servers SET status = ? WHERE id = ?').run('running', serverId);
+        broadcast(serverId, 'status', { status: 'running' });
+      }
+    };
+
+    const handleStderrLine = (line) => {
+      if (!line) return;
+      this.appendLog(serverId, serverDir, line);
+      broadcast(serverId, 'log', { line, type: 'error' });
+    };
 
     // Handle stdout
     child.stdout.on('data', (data) => {
-      const text = data.toString();
-      // Split by newline - each line is a separate log entry
-      const lines = text.split('\n').filter(l => l.length > 0);
-      for (const line of lines) {
-        this.appendLog(serverId, serverDir, line);
-        broadcast(serverId, 'log', { line });
-        MonitorManager.updateFromLog(serverId, line);
-
-        // Detect server fully started (Done message) - only when in starting state
-        if (!serverStarted && line.includes('Done') && line.includes('For help')) {
-          serverStarted = true;
-          const db = getDb();
-          db.prepare('UPDATE servers SET status = ? WHERE id = ?').run('running', serverId);
-          broadcast(serverId, 'status', { status: 'running' });
-        }
+      stdoutBuf += stdoutDecoder.write(data);
+      const parts = stdoutBuf.split(/\r?\n/);
+      stdoutBuf = parts.pop() || '';
+      for (const line of parts) {
+        handleStdoutLine(line);
       }
     });
 
     // Handle stderr
     child.stderr.on('data', (data) => {
-      const text = data.toString();
-      const lines = text.split('\n').filter(l => l.length > 0);
-      for (const line of lines) {
-        this.appendLog(serverId, serverDir, line);
-        broadcast(serverId, 'log', { line, type: 'error' });
+      stderrBuf += stderrDecoder.write(data);
+      const parts = stderrBuf.split(/\r?\n/);
+      stderrBuf = parts.pop() || '';
+      for (const line of parts) {
+        handleStderrLine(line);
       }
+    });
+
+    child.on('error', (err) => {
+      this.processes.delete(serverId);
+      this.stoppingServers.delete(serverId);
+      MonitorManager.stopMonitoring(serverId);
+      handleStderrLine(`Failed to launch Java: ${err.message}`);
+      const dbNow = getDb();
+      dbNow.prepare('UPDATE servers SET status = ? WHERE id = ?').run('crashed', serverId);
+      broadcast(serverId, 'status', { status: 'crashed', error: err.message });
     });
 
     // Handle exit
     child.on('exit', (code) => {
+      const restOut = stdoutBuf + stdoutDecoder.end();
+      const restErr = stderrBuf + stderrDecoder.end();
+      if (restOut.trim()) handleStdoutLine(restOut.trimEnd());
+      if (restErr.trim()) handleStderrLine(restErr.trimEnd());
+      stdoutBuf = '';
+      stderrBuf = '';
+
       this.processes.delete(serverId);
       MonitorManager.stopMonitoring(serverId);
-      const status = code === 0 ? 'stopped' : 'crashed';
-      db.prepare('UPDATE servers SET status = ? WHERE id = ?').run(status, serverId);
+      const wasStopping = this.stoppingServers.delete(serverId);
+      const status = (code === 0 || wasStopping) ? 'stopped' : 'crashed';
+      const dbNow = getDb();
+      dbNow.prepare('UPDATE servers SET status = ? WHERE id = ?').run(status, serverId);
       broadcast(serverId, 'status', { status, exitCode: code });
     });
 
@@ -325,13 +379,22 @@ export class ServerManager {
     return { status: 'running' };
   }
 
+  static killProcessTree(pid) {
+    return new Promise((resolve) => {
+      if (!pid) return resolve();
+      treeKill(pid, 'SIGKILL', () => resolve());
+    });
+  }
+
   static async stop(serverId) {
     const child = this.processes.get(serverId);
+    this.stoppingServers.add(serverId);
 
     if (child) {
       // Check if process already exited
       if (child.exitCode !== null) {
         this.processes.delete(serverId);
+        this.stoppingServers.delete(serverId);
         MonitorManager.stopMonitoring(serverId);
         const db = getDb();
         db.prepare('UPDATE servers SET status = ? WHERE id = ?').run('stopped', serverId);
@@ -339,7 +402,7 @@ export class ServerManager {
         return { status: 'stopped' };
       }
 
-      child.stdin.write('stop\n');
+      try { child.stdin.write('stop\n'); } catch {}
 
       return new Promise((resolve) => {
         const cleanup = () => {
@@ -348,42 +411,53 @@ export class ServerManager {
           db.prepare('UPDATE servers SET status = ? WHERE id = ?').run('stopped', serverId);
           broadcast(serverId, 'status', { status: 'stopped' });
           this.processes.delete(serverId);
+          this.stoppingServers.delete(serverId);
           MonitorManager.stopMonitoring(serverId);
           resolve({ status: 'stopped' });
         };
 
-        child.on('exit', cleanup);
+        child.once('exit', cleanup);
 
         // Force kill after 30 seconds
-        const timer = setTimeout(() => {
+        const timer = setTimeout(async () => {
           child.off('exit', cleanup);
           if (this.processes.has(serverId)) {
-            child.kill('SIGKILL');
+            await this.killProcessTree(child.pid);
+            try { child.kill('SIGKILL'); } catch {}
           }
           cleanup();
         }, 30000);
       });
     }
 
-    // No reference - try to kill by finding the process
+    // No reference - try to find and kill the Java process on POSIX hosts
     const db = getDb();
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
-    if (!server) throw new Error('Server not found');
-
-    const serverDir = server.path || join(INSTANCES_DIR,serverId);
-    const launchConfig = this.findJarFile(serverDir, server.server_type);
-    if (launchConfig) {
-      try {
-        const searchPath = launchConfig.path;
-        // Find and kill the Java process
-        const psOutput = execSync(`ps aux | grep "${searchPath}" | grep -v grep | awk '{print $2}'`, { encoding: 'utf-8' });
-        const pids = psOutput.trim().split('\n').filter(Boolean);
-        for (const pid of pids) {
-          execSync(`kill ${pid}`);
-        }
-      } catch {}
+    if (!server) {
+      this.stoppingServers.delete(serverId);
+      throw new Error('Server not found');
     }
 
+    if (process.platform !== 'win32') {
+      const serverDir = resolveServerDir(server, serverId);
+      const launchConfig = this.findJarFile(serverDir, server.server_type);
+      if (launchConfig) {
+        try {
+          const { execFileSync } = await import('child_process');
+          const psOutput = execFileSync('ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf-8' });
+          for (const line of psOutput.split('\n')) {
+            if (line.includes(launchConfig.path) || line.includes(serverDir)) {
+              const pid = parseInt(line.trim().split(/\s+/)[0], 10);
+              if (pid && pid !== process.pid) {
+                try { process.kill(pid, 'SIGTERM'); } catch {}
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    this.stoppingServers.delete(serverId);
     db.prepare('UPDATE servers SET status = ? WHERE id = ?').run('stopped', serverId);
     broadcast(serverId, 'status', { status: 'stopped' });
     MonitorManager.stopMonitoring(serverId);
@@ -391,8 +465,10 @@ export class ServerManager {
   }
 
   static async forceStop(serverId) {
+    this.stoppingServers.add(serverId);
     const child = this.processes.get(serverId);
     if (child) {
+      await this.killProcessTree(child.pid);
       try { child.kill('SIGKILL'); } catch {}
       this.processes.delete(serverId);
     }
@@ -414,31 +490,157 @@ export class ServerManager {
     child.stdin.write(command + '\n');
   }
 
+  static looksLikeServerDir(dir, maxDepth = 2) {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    const visible = entries.filter(e => !e.name.startsWith('.') && e.name !== '__MACOSX');
+    if (visible.some(e =>
+      e.name.endsWith('.jar') ||
+      ['run.bat', 'run.sh', 'win_args.txt', 'unix_args.txt', 'server.properties', 'libraries', 'mods', 'plugins'].includes(e.name)
+    )) {
+      return true;
+    }
+    if (maxDepth > 0 && visible.length === 1 && visible[0].isDirectory()) {
+      return this.looksLikeServerDir(join(dir, visible[0].name), maxDepth - 1);
+    }
+    return false;
+  }
+
+  static unwrapSingleSubdir(dir) {
+    if (!existsSync(dir)) return false;
+    const reservedDirs = new Set([
+      'world', 'world_nether', 'world_the_end', 'mods', 'plugins',
+      'libraries', 'config', 'logs', 'crash-reports', 'saves',
+      'datapacks', 'cache', 'versions', 'assets'
+    ]);
+    let unwrapped = false;
+
+    for (let depth = 0; depth < 2; depth++) {
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        break;
+      }
+      const visible = entries.filter(e => !e.name.startsWith('.') && e.name !== '__MACOSX');
+      if (visible.length !== 1 || !visible[0].isDirectory()) break;
+
+      const subName = visible[0].name;
+      if (reservedDirs.has(subName.toLowerCase())) break;
+
+      const subDir = join(dir, subName);
+      if (!this.looksLikeServerDir(subDir, 2)) break;
+
+      const tmpDir = join(dir, `__unwrap_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+      renameSync(subDir, tmpDir);
+      try {
+        for (const item of readdirSync(tmpDir, { withFileTypes: true })) {
+          const src = join(tmpDir, item.name);
+          const dst = join(dir, item.name);
+          if (existsSync(dst)) {
+            if (item.name.startsWith('.')) continue;
+            rmSync(dst, { recursive: true, force: true });
+          }
+          renameSync(src, dst);
+        }
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+      unwrapped = true;
+    }
+    return unwrapped;
+  }
+
+  static findArgsFileRecursive(baseDir, preferredName, fallbackName, maxDepth = 8) {
+    if (!existsSync(baseDir)) return null;
+    const queue = [{ dir: baseDir, depth: 0 }];
+    let fallbackMatch = null;
+
+    while (queue.length > 0) {
+      const { dir, depth } = queue.shift();
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (entry.isFile()) {
+          if (entry.name === preferredName) {
+            return join(dir, entry.name);
+          }
+          if (!fallbackMatch && entry.name === fallbackName) {
+            fallbackMatch = join(dir, entry.name);
+          }
+        } else if (entry.isDirectory() && depth < maxDepth && !entry.name.startsWith('.')) {
+          queue.push({ dir: join(dir, entry.name), depth: depth + 1 });
+        }
+      }
+    }
+    return fallbackMatch;
+  }
+
   static findJarFile(dir, serverType) {
     if (!existsSync(dir)) return null;
     const files = readdirSync(dir);
 
-    // Check for Forge/NeoForge args file first (match host OS)
+    // Check for Forge/NeoForge args file in root or nested libraries/ tree
     const preferredArgs = process.platform === 'win32' ? 'win_args.txt' : 'unix_args.txt';
     const fallbackArgs = process.platform === 'win32' ? 'unix_args.txt' : 'win_args.txt';
-    const argsFile = files.find(f => f === preferredArgs) || files.find(f => f === fallbackArgs);
-    if (argsFile) return { type: 'args', path: join(dir, argsFile) };
+    const rootArgs = files.find(f => f === preferredArgs) || files.find(f => f === fallbackArgs);
+    if (rootArgs) return { type: 'args', path: join(dir, rootArgs) };
+
+    const libsArgs = this.findArgsFileRecursive(join(dir, 'libraries'), preferredArgs, fallbackArgs);
+    if (libsArgs) return { type: 'args', path: libsArgs };
+
+    // Parse run.bat / run.sh generated by modern Forge / NeoForge / custom packs
+    const runScripts = process.platform === 'win32' ? ['run.bat', 'run.sh'] : ['run.sh', 'run.bat'];
+    for (const scriptName of runScripts) {
+      if (!files.includes(scriptName)) continue;
+      try {
+        const scriptContent = readFileSync(join(dir, scriptName), 'utf-8');
+        const argsMatch = scriptContent.match(/@["']?([^\s"'`]+(?:win|unix)_args\.txt)["']?/i);
+        if (argsMatch) {
+          const candidate = resolve(dir, argsMatch[1].replace(/[\\/]+/g, process.platform === 'win32' ? '\\' : '/'));
+          if (existsSync(candidate)) {
+            return { type: 'args', path: candidate };
+          }
+        }
+        const jarMatch = scriptContent.match(/-jar\s+["']?([^\s"'`]+\.jar)["']?/i);
+        if (jarMatch) {
+          const candidate = resolve(dir, jarMatch[1].replace(/[\\/]+/g, process.platform === 'win32' ? '\\' : '/'));
+          if (existsSync(candidate) && !candidate.toLowerCase().includes('installer')) {
+            return { type: 'jar', path: candidate };
+          }
+        }
+      } catch {}
+    }
 
     const patterns = {
-      vanilla: /^minecraft_server.*\.jar$/,
-      paper: /^paper-.*\.jar$/,
-      purpur: /^purpur-.*\.jar$/,
-      fabric: /^fabric-server.*\.jar$/,
-      forge: /^forge-.*\.jar$/,
-      neoforge: /^neoforge-.*\.jar$/,
-      custom: /\.jar$/  // 自定义服务端匹配所有 jar 文件
+      vanilla: /^minecraft_server.*\.jar$/i,
+      paper: /^paper-.*\.jar$/i,
+      purpur: /^purpur-.*\.jar$/i,
+      fabric: /^fabric-server.*\.jar$/i,
+      forge: /^forge-.*\.jar$/i,
+      neoforge: /^neoforge-.*\.jar$/i,
+      custom: /\.jar$/i
     };
-    const pattern = patterns[serverType] || /\.jar$/;
-    const found = files.find(f => pattern.test(f));
+    const isInstaller = (name) => name.toLowerCase().includes('installer');
+    const pattern = patterns[serverType] || /\.jar$/i;
+    const found = files.find(f => pattern.test(f) && !isInstaller(f));
     if (found) return { type: 'jar', path: join(dir, found) };
 
-    // Fallback: find any jar that's not installer
-    const anyJar = files.find(f => f.endsWith('.jar') && !f.includes('installer'));
+    // Prefer standard server jar names before generic fallback
+    const priorityJar = files.find(f =>
+      /^(server|fabric-server-launch|paper-.*|purpur-.*|forge-.*|neoforge-.*)\.jar$/i.test(f) && !isInstaller(f)
+    );
+    if (priorityJar) return { type: 'jar', path: join(dir, priorityJar) };
+
+    const anyJar = files.find(f => f.endsWith('.jar') && !isInstaller(f));
     return anyJar ? { type: 'jar', path: join(dir, anyJar) } : null;
   }
 
@@ -449,7 +651,7 @@ export class ServerManager {
     let existing = {};
     if (existsSync(propsPath)) {
       const content = readFileSync(propsPath, 'utf-8');
-      for (const line of content.split('\n')) {
+      for (const line of content.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
         const eqIndex = trimmed.indexOf('=');
@@ -479,7 +681,11 @@ export class ServerManager {
 
   static getAll() {
     const db = getDb();
-    return db.prepare('SELECT * FROM servers ORDER BY created_at DESC').all();
+    const rows = db.prepare('SELECT * FROM servers ORDER BY created_at DESC').all();
+    return rows.map((server) => ({
+      ...server,
+      downloadStatus: this.getDownloadStatus(server.id)
+    }));
   }
 
   static getById(id) {
@@ -493,14 +699,20 @@ export class ServerManager {
 
   static delete(id) {
     if (this.processes.has(id)) {
-      this.processes.get(id).kill('SIGKILL');
+      this.stoppingServers.add(id);
+      const child = this.processes.get(id);
+      if (child?.pid) {
+        treeKill(child.pid, 'SIGKILL', () => {});
+      }
+      try { child?.kill('SIGKILL'); } catch {}
       this.processes.delete(id);
     }
+    MonitorManager.stopMonitoring(id);
     const db = getDb();
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(id);
-    const serverDir = server?.path || join(INSTANCES_DIR,id);
+    const serverDir = resolveServerDir(server, id);
     if (existsSync(serverDir)) {
-      rmSync(serverDir, { recursive: true, force: true });
+      rmSync(serverDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
     this.downloadStatus.delete(id);
     db.prepare('DELETE FROM servers WHERE id = ?').run(id);
@@ -508,18 +720,51 @@ export class ServerManager {
 
   static updateConfig(id, config) {
     const db = getDb();
+    const normalized = { ...config };
+    if (normalized.maxMemory !== undefined && normalized.max_memory === undefined) {
+      normalized.max_memory = normalized.maxMemory;
+    }
+
     const sets = [];
     const values = [];
-    for (const [key, value] of Object.entries(config)) {
-      if (['name', 'max_memory', 'port'].includes(key)) {
-        sets.push(`${key} = ?`);
-        values.push(value);
+    let updatedPort = null;
+
+    for (const [key, value] of Object.entries(normalized)) {
+      if (!['name', 'max_memory', 'port'].includes(key)) continue;
+      if (key === 'max_memory') {
+        const mem = parseInt(value, 10);
+        if (!Number.isFinite(mem) || mem < 256) continue;
+        sets.push('max_memory = ?');
+        values.push(mem);
+      } else if (key === 'port') {
+        const port = parseInt(value, 10);
+        if (!Number.isFinite(port) || port < 1 || port > 65535) continue;
+        sets.push('port = ?');
+        values.push(port);
+        updatedPort = port;
+      } else if (key === 'name') {
+        const name = String(value || '').trim();
+        if (!name) continue;
+        sets.push('name = ?');
+        values.push(name);
       }
     }
+
     if (sets.length > 0) {
       values.push(id);
       db.prepare(`UPDATE servers SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     }
+
+    if (updatedPort !== null) {
+      try {
+        const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(id);
+        const dir = resolveServerDir(server, id);
+        if (existsSync(join(dir, 'server.properties'))) {
+          this.writeServerProperties(dir, { ...server, port: updatedPort });
+        }
+      } catch {}
+    }
+
     return this.getById(id);
   }
 
@@ -527,12 +772,12 @@ export class ServerManager {
   static readServerProperties(id) {
     const server = this.getById(id);
     if (!server) throw new Error('Server not found');
-    const dir = server.path || join(INSTANCES_DIR,id);
+    const dir = resolveServerDir(server, id);
     const propsPath = join(dir, 'server.properties');
     if (!existsSync(propsPath)) return {};
     const content = readFileSync(propsPath, 'utf-8');
     const props = {};
-    for (const line of content.split('\n')) {
+    for (const line of content.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) continue;
       const eqIndex = trimmed.indexOf('=');
@@ -549,14 +794,15 @@ export class ServerManager {
   static writeServerPropertiesById(id, props) {
     const server = this.getById(id);
     if (!server) throw new Error('Server not found');
-    const dir = server.path || join(INSTANCES_DIR,id);
+    const dir = resolveServerDir(server, id);
+    mkdirSync(dir, { recursive: true });
     const propsPath = join(dir, 'server.properties');
 
     // 读取现有属性
     let existing = {};
     if (existsSync(propsPath)) {
       const content = readFileSync(propsPath, 'utf-8');
-      for (const line of content.split('\n')) {
+      for (const line of content.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
         const eqIndex = trimmed.indexOf('=');
@@ -572,6 +818,14 @@ export class ServerManager {
     // 写入
     const lines = Object.entries(merged).map(([k, v]) => `${k}=${v}`);
     writeFileSync(propsPath, lines.join('\n') + '\n');
+
+    // Sync server-port back to servers DB table so P2P & status cards stay consistent
+    const portNum = parseInt(merged['server-port'], 10);
+    if (Number.isFinite(portNum) && portNum >= 1 && portNum <= 65535 && portNum !== server.port) {
+      const db = getDb();
+      db.prepare('UPDATE servers SET port = ? WHERE id = ?').run(portNum, id);
+    }
+
     return merged;
   }
 }

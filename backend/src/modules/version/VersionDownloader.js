@@ -1,9 +1,9 @@
-import { mkdirSync, writeFileSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import AdmZip from 'adm-zip';
 import { safeFetch } from '../../utils/fetch.js';
-import { INSTANCES_DIR } from '../../utils/paths.js';
+import { resolveServerDir } from '../../utils/paths.js';
 
 const USER_AGENT = 'FastMinecraft/1.0 (desktop-manager)';
 
@@ -11,6 +11,16 @@ async function fetchJsonWithHeaders(url) {
   const resp = await safeFetch(url, { headers: { 'User-Agent': USER_AGENT } });
   if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
   return resp.json();
+}
+
+function compareSemverDesc(a, b) {
+  const pa = a.split('.').map(n => parseInt(n, 10) || 0);
+  const pb = b.split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pb[i] || 0) - (pa[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 const SOURCES = {
@@ -77,47 +87,50 @@ const SOURCES = {
     },
     getUrl: async (version) => {
       const data = await fetchJsonWithHeaders(`https://meta.fabricmc.net/v2/versions/loader/${version}`);
+      if (!Array.isArray(data) || data.length === 0) throw new Error(`No Fabric loader for ${version}`);
       const loader = data[0].loader.version;
-      return `https://meta.fabricmc.net/v2/versions/loader/${version}/${loader}/1.0.0/server/jar`;
+      return `https://meta.fabricmc.net/v2/versions/loader/${version}/${loader}/1.0.1/server/jar`;
     }
   },
   forge: {
     list: async () => {
-      const resp = await safeFetch('https://files.minecraftforge.net/maven/net/minecraftforge/forge/');
-      const text = await resp.text();
-      const versions = text.match(/(\d+\.\d+\.\d+)/g) || [];
-      return [...new Set(versions)].slice(0, 30);
+      const data = await fetchJsonWithHeaders('https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json');
+      const promos = data.promos || {};
+      const mcVersions = new Set();
+      for (const key of Object.keys(promos)) {
+        const m = key.match(/^(\d+\.\d+(?:\.\d+)?)-(recommended|latest)$/);
+        if (m) mcVersions.add(m[1]);
+      }
+      return [...mcVersions].sort(compareSemverDesc).slice(0, 30);
     },
     getUrl: async (version) => {
-      return `https://files.minecraftforge.net/maven/net/minecraftforge/forge/${version}-${getForgeVersion(version)}/forge-${version}-${getForgeVersion(version)}-installer.jar`;
+      const data = await fetchJsonWithHeaders('https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json');
+      const promos = data.promos || {};
+      const forgeBuild = promos[`${version}-recommended`] || promos[`${version}-latest`];
+      if (!forgeBuild) throw new Error(`No Forge build found for ${version}`);
+      return `https://maven.minecraftforge.net/net/minecraftforge/forge/${version}-${forgeBuild}/forge-${version}-${forgeBuild}-installer.jar`;
     }
   },
   neoforge: {
     list: async () => {
-      const resp = await safeFetch('https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml');
+      const resp = await safeFetch('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml', {
+        headers: { 'User-Agent': USER_AGENT }
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching NeoForge versions`);
       const text = await resp.text();
-      const versions = text.match(/<version>(.*?)<\/version>/g) || [];
-      return versions.map(v => v.replace(/<\/?version>/g, '')).reverse().slice(0, 20);
+      const versions = (text.match(/<version>(.*?)<\/version>/g) || [])
+        .map(v => v.replace(/<\/?version>/g, ''))
+        .filter(v => !v.includes('-alpha'));
+      return versions.reverse().slice(0, 25);
     },
     getUrl: async (version) => {
-      return `https://maven.neoforged.net/releases/net/neoforged/forge/${version}/forge-${version}-installer.jar`;
+      if (String(version).startsWith('1.20.1-')) {
+        return `https://maven.neoforged.net/releases/net/neoforged/forge/${version}/forge-${version}-installer.jar`;
+      }
+      return `https://maven.neoforged.net/releases/net/neoforged/neoforge/${version}/neoforge-${version}-installer.jar`;
     }
   }
 };
-
-function getForgeVersion(mcVersion) {
-  const forgeVersions = {
-    '1.20.4': '49.0.30',
-    '1.20.2': '48.1.0',
-    '1.20.1': '47.2.0',
-    '1.19.4': '45.2.0',
-    '1.19.2': '43.3.0',
-    '1.18.2': '40.2.0',
-    '1.16.5': '36.2.39',
-    '1.12.2': '14.23.5.2860'
-  };
-  return forgeVersions[mcVersion] || 'latest';
-}
 
 export async function getVersions(type = 'vanilla') {
   if (!SOURCES[type]) throw new Error(`Unknown server type: ${type}`);
@@ -128,18 +141,24 @@ export async function getVersions(type = 'vanilla') {
   }));
 }
 
+export async function getDownloadUrl(type, version) {
+  if (!SOURCES[type]) throw new Error(`Unknown server type: ${type}`);
+  return SOURCES[type].getUrl(version);
+}
+
 export async function downloadServer(type, version, serverId, onProgress) {
   if (!SOURCES[type]) throw new Error(`Unknown server type: ${type}`);
 
   const { getDb } = await import('../../database/init.js');
-  const server = getDb().prepare('SELECT path FROM servers WHERE id = ?').get(serverId);
-  const serverDir = server?.path || join(INSTANCES_DIR, serverId);
+  const server = getDb().prepare('SELECT id, path FROM servers WHERE id = ?').get(serverId);
+  const serverDir = resolveServerDir(server, serverId);
   mkdirSync(serverDir, { recursive: true });
 
   const url = await SOURCES[type].getUrl(version);
   console.log(`Downloading ${type} ${version} from ${url}`);
 
   const response = await safeFetch(url, {
+    timeout: 120000,
     headers: { 'User-Agent': USER_AGENT },
     onProgress: (downloaded, total) => {
       if (onProgress && total > 0) {
@@ -148,7 +167,7 @@ export async function downloadServer(type, version, serverId, onProgress) {
     }
   });
 
-  if (!response.ok) throw new Error(`Download failed: ${response.statusText}`);
+  if (!response.ok) throw new Error(`Download failed: HTTP ${response.status} ${response.statusText}`);
 
   const buffer = Buffer.from(await response.arrayBuffer());
 
@@ -166,8 +185,13 @@ export async function downloadServer(type, version, serverId, onProgress) {
 
   if (type === 'forge' || type === 'neoforge') {
     const { getJavaPath } = await import('../java/JavaManager.js');
-    const javaPath = await getJavaPath(version);
-    execSync(`"${javaPath}" -jar "${jarPath}" --installServer`, { cwd: serverDir });
+    const javaPath = await getJavaPath(version, null, serverDir);
+    execFileSync(javaPath, ['-jar', jarPath, '--installServer'], {
+      cwd: serverDir,
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: 300000,
+      windowsHide: true,
+    });
   }
 
   console.log(`Downloaded ${type} ${version} to ${jarPath}`);

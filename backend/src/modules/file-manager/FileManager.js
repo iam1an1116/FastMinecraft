@@ -1,14 +1,19 @@
 import { existsSync, readdirSync, statSync, unlinkSync, renameSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs';
-import { join, basename, relative } from 'path';
-import { INSTANCES_DIR } from '../../utils/paths.js';
+import { join, resolve, sep, dirname } from 'path';
+import { getDb } from '../../database/init.js';
+import { resolveServerDir, decodeUploadFilename } from '../../utils/paths.js';
 
 function validatePath(serverId, requestedPath) {
-  const serverDir = join(INSTANCES_DIR, serverId);
-  const fullPath = join(serverDir, requestedPath || '');
-  const resolved = join(serverDir, relative(serverDir, fullPath));
+  const db = getDb();
+  const server = db.prepare('SELECT id, path FROM servers WHERE id = ?').get(serverId);
+  if (!server) throw new Error('Server not found');
 
-  // Prevent directory traversal
-  if (!resolved.startsWith(serverDir)) {
+  const serverDir = resolve(resolveServerDir(server, serverId));
+  const rel = String(requestedPath || '').replace(/^[/\\]+/, '');
+  const resolved = resolve(serverDir, rel);
+
+  // Prevent directory traversal and sibling-prefix escapes
+  if (resolved !== serverDir && !resolved.startsWith(serverDir + sep)) {
     throw new Error('Directory traversal detected');
   }
 
@@ -55,15 +60,26 @@ export class FileManager {
   static upload(serverId, subPath, file) {
     const dirPath = validatePath(serverId, subPath);
     mkdirSync(dirPath, { recursive: true });
-    const filePath = join(dirPath, basename(file.originalname));
+    const filePath = join(dirPath, decodeUploadFilename(file.originalname));
     writeFileSync(filePath, file.buffer);
     return { uploaded: true, path: filePath };
   }
 
   static rename(serverId, oldPath, newName) {
     const fullOldPath = validatePath(serverId, oldPath);
-    const dir = join(fullOldPath, '..');
-    const newPath = join(dir, newName);
+    const cleanName = String(newName || '').trim();
+    if (!cleanName || cleanName === '.' || cleanName === '..' || /[/\\]/.test(cleanName)) {
+      throw new Error('Invalid target filename');
+    }
+
+    const dir = dirname(fullOldPath);
+    const newPath = resolve(dir, cleanName);
+
+    // Ensure destination stays inside the validated server root
+    const rootDir = validatePath(serverId, '');
+    if (newPath !== rootDir && !newPath.startsWith(rootDir + sep)) {
+      throw new Error('Directory traversal detected');
+    }
 
     if (!existsSync(fullOldPath)) throw new Error('File not found');
     renameSync(fullOldPath, newPath);

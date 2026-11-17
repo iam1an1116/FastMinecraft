@@ -6,6 +6,7 @@ class ServerInfo {
   final int port;
   final String status;
   final int maxMemory;
+  final String? downloadError;
 
   ServerInfo({
     required this.id,
@@ -15,9 +16,11 @@ class ServerInfo {
     required this.port,
     required this.status,
     required this.maxMemory,
+    this.downloadError,
   });
 
   factory ServerInfo.fromJson(Map<String, dynamic> json) {
+    final dlStatus = json['downloadStatus'];
     return ServerInfo(
       id: json['id']?.toString() ?? '',
       name: json['name']?.toString() ?? '未命名服务器',
@@ -26,10 +29,14 @@ class ServerInfo {
       port: json['port'] is int ? json['port'] : int.tryParse(json['port']?.toString() ?? '25565') ?? 25565,
       status: json['status']?.toString() ?? 'stopped',
       maxMemory: json['max_memory'] is int ? json['max_memory'] : int.tryParse(json['max_memory']?.toString() ?? '4096') ?? 4096,
+      downloadError: dlStatus is Map ? dlStatus['error']?.toString() : null,
     );
   }
 
   bool get isRunning => status == 'running';
   bool get isStarting => status == 'starting';
   bool get isStopped => status == 'stopped';
+  bool get isDownloading => status == 'downloading';
+  bool get isError => status == 'error';
+  bool get isCrashed => status == 'crashed';
 }

@@ -52,6 +52,11 @@ app.use('/api/servers', statsRoutes);
 app.use('/api/servers', playerRoutes);
 app.use('/api/network', networkRoutes);
 
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, pid: process.pid, platform: process.platform });
+});
+
 // Backend log viewer
 app.get('/api/logs', (req, res) => {
   try {
@@ -90,7 +95,16 @@ async function start() {
 
   setupWebSocket(server);
 
-  server.listen(PORT, () => {
+  server.on('error', (err) => {
+    if (err?.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} is already in use, exiting cleanly.`);
+      process.exit(0);
+    }
+    console.error('Server error:', err);
+    process.exit(1);
+  });
+
+  server.listen(PORT, '127.0.0.1', () => {
     console.log(`FM Backend running on port ${PORT}`);
   });
 }
