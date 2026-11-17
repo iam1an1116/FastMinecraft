@@ -343,6 +343,7 @@ class _NetworkPageState extends State<NetworkPage> {
     final String natType = _p2pStatus['natType']?.toString() ?? 'unknown';
     final bool vpsConnected = _p2pStatus['vpsConnected'] == true;
     final int peersCount = _p2pStatus['peersCount'] is int ? _p2pStatus['peersCount'] : 0;
+    final bool portListening = _p2pStatus['portListening'] != false;
     final String? err = _p2pStatus['error']?.toString();
 
     String statusLabel = '未开启';
@@ -389,6 +390,17 @@ class _NetworkPageState extends State<NetworkPage> {
             ),
             const SizedBox(height: 10),
             Text(statusLabel, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: statusColor)),
+            if (err != null && err.isNotEmpty && status != 'error') ...[
+              const SizedBox(height: 6),
+              Text(err, textAlign: TextAlign.center, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFFD97706))),
+            ] else if (!portListening) ...[
+              const SizedBox(height: 6),
+              Text(
+                '提示：当前服务器端口 :${_p2pStatus['gamePort'] ?? _port} 尚未开启监听，请先启动 MC 服务端',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFFD97706)),
+              ),
+            ],
             const SizedBox(height: 6),
             if (_p2pStatus['pubIp'] != null)
               Text(

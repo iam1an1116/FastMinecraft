@@ -1,5 +1,6 @@
 #include "flutter_window.h"
 
+#include <commctrl.h>
 #include <commdlg.h>
 #include <dwmapi.h>
 
@@ -8,6 +9,8 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "utils.h"
+
+#pragma comment(lib, "comctl32.lib")
 
 namespace {
 
@@ -18,9 +21,13 @@ constexpr DWORD kDwmwaCaptionColor = 35;
 constexpr DWORD kDwmwaSystemBackdropType = 38;
 constexpr DWORD kDwmwaMicaEffect = 1029;
 constexpr DWORD kDwmwaColorNone = 0xFFFFFFFE;
+constexpr UINT_PTR kChildSubclassId = 101;
+constexpr DWORD kWin11AcrylicTintAbgr = 0x52F2F5F8;
+constexpr DWORD kWin10AcrylicTintAbgr = 0x5CF2F5F8;
 
 enum FmAccentState {
   kAccentDisabled = 0,
+  kAccentEnableBlurBehind = 3,
   kAccentEnableAcrylicBlurBehind = 4,
 };
 
@@ -68,6 +75,33 @@ void SetAccentPolicy(HWND hwnd, int state, DWORD flags, DWORD abgr_color) {
   set_wca(hwnd, &data);
 }
 
+LRESULT CALLBACK ChildSubclassProc(HWND hwnd,
+                                   UINT message,
+                                   WPARAM wparam,
+                                   LPARAM lparam,
+                                   UINT_PTR subclass_id,
+                                   DWORD_PTR ref_data) {
+  (void)subclass_id;
+  (void)ref_data;
+  if (message == WM_NCHITTEST) {
+    HWND parent = GetAncestor(hwnd, GA_ROOT);
+    if (parent && !IsZoomed(parent)) {
+      RECT rect;
+      GetWindowRect(parent, &rect);
+      const LONG x = static_cast<LONG>(static_cast<short>(LOWORD(lparam)));
+      const LONG y = static_cast<LONG>(static_cast<short>(HIWORD(lparam)));
+      const LONG border = 6;
+      if (x < rect.left + border || x >= rect.right - border ||
+          y < rect.top + border || y >= rect.bottom - border) {
+        return HTTRANSPARENT;
+      }
+    }
+  } else if (message == WM_ERASEBKGND) {
+    return 1;
+  }
+  return DefSubclassProc(hwnd, message, wparam, lparam);
+}
+
 bool FileExists(const std::wstring& path) {
   DWORD attrs = GetFileAttributesW(path.c_str());
   return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
@@ -97,48 +131,34 @@ FlutterWindow::~FlutterWindow() {
 }
 
 void FlutterWindow::ApplyFramelessBackdrop(HWND hwnd) {
+  LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+  style &= ~static_cast<LONG_PTR>(WS_CAPTION);
+  style |= static_cast<LONG_PTR>(WS_CLIPCHILDREN);
+  SetWindowLongPtrW(hwnd, GWL_STYLE, style);
   SetMenu(hwnd, nullptr);
 
-  // Reset legacy accent policy before applying DWM/Acrylic material.
-  SetAccentPolicy(hwnd, kAccentDisabled, 2, 0);
+  MARGINS margins = {-1, -1, -1, -1};
+  DwmExtendFrameIntoClientArea(hwnd, &margins);
 
   const DWORD build = GetWindowsBuildNumber();
-  BOOL dark = FALSE;
-  DwmSetWindowAttribute(hwnd, kDwmwaUseImmersiveDarkMode, &dark, sizeof(dark));
-
-  if (build >= 22523) {
-    // Windows 11 22H2+ native Acrylic backdrop + smooth DWM rounded corners.
-    MARGINS margins = {-1, -1, -1, -1};
-    DwmExtendFrameIntoClientArea(hwnd, &margins);
-
+  if (build >= 22000) {
     COLORREF color_none = kDwmwaColorNone;
-    DwmSetWindowAttribute(hwnd, kDwmwaCaptionColor, &color_none, sizeof(color_none));
     DwmSetWindowAttribute(hwnd, kDwmwaBorderColor, &color_none, sizeof(color_none));
 
     int corner = 2;  // DWMWCP_ROUND
     DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
 
-    int backdrop = 3;  // DWMSBT_TRANSIENTWINDOW (Acrylic)
-    if (FAILED(DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop, sizeof(backdrop)))) {
-      backdrop = 2;  // Fallback: Mica
-      DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop, sizeof(backdrop));
+    if (build >= 22523) {
+      // Avoid Win11 Light DWMSBT_TRANSIENTWINDOW falling back to opaque white.
+      int backdrop_none = 1;  // DWMSBT_NONE
+      DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop_none, sizeof(backdrop_none));
+    } else {
+      BOOL disable_mica = FALSE;
+      DwmSetWindowAttribute(hwnd, kDwmwaMicaEffect, &disable_mica, sizeof(disable_mica));
     }
-  } else if (build >= 22000) {
-    // Windows 11 21H2
-    MARGINS margins = {-1, -1, -1, -1};
-    DwmExtendFrameIntoClientArea(hwnd, &margins);
-
-    int corner = 2;
-    DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
-
-    SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2, 0x99FFFFFF);
-    BOOL enable_mica = TRUE;
-    DwmSetWindowAttribute(hwnd, kDwmwaMicaEffect, &enable_mica, sizeof(enable_mica));
+    SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2, kWin11AcrylicTintAbgr);
   } else {
-    // Windows 10 Acrylic fallback (light frosted white tint)
-    MARGINS margins = {-1, -1, -1, -1};
-    DwmExtendFrameIntoClientArea(hwnd, &margins);
-    SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2, 0xA8FFFFFF);
+    SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2, kWin10AcrylicTintAbgr);
   }
 }
 
@@ -319,11 +339,16 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetupWindowChannel();
-  SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  HWND child = flutter_controller_->view()->GetNativeWindow();
+  SetChildContent(child);
+  SetWindowSubclass(child, ChildSubclassProc, kChildSubclassId, 0);
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
+    HWND h = this->GetHandle();
+    this->ApplyFramelessBackdrop(h);
+    SetWindowPos(h, nullptr, 0, 0, 0, 0,
+                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     this->Show();
-    this->ApplyFramelessBackdrop(this->GetHandle());
   });
 
   flutter_controller_->ForceRedraw();
@@ -374,8 +399,14 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
         return 0;
       }
       break;
-    case WM_NCACTIVATE:
-      return TRUE;
+    case WM_ENTERSIZEMOVE:
+      SetAccentPolicy(hwnd, kAccentEnableBlurBehind, 2, 0);
+      break;
+    case WM_EXITSIZEMOVE:
+      SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2,
+                      GetWindowsBuildNumber() >= 22000 ? kWin11AcrylicTintAbgr
+                                                       : kWin10AcrylicTintAbgr);
+      break;
     case WM_NCHITTEST: {
       RECT rect;
       GetWindowRect(hwnd, &rect);

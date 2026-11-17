@@ -89,6 +89,7 @@ class _PlayerModePageState extends State<PlayerModePage> {
     final bool isConnected = status == 'connected';
     final String? localAddress = _p2p['localAddress']?.toString();
     final int? pingMs = _p2p['pingMs'] is int ? _p2p['pingMs'] : null;
+    final String? warningMsg = _p2p['warning']?.toString();
     final String? errorMsg = _p2p['error']?.toString();
 
     String statusLabel = '';
@@ -210,6 +211,14 @@ class _PlayerModePageState extends State<PlayerModePage> {
                   localAddress ?? '127.0.0.1:25565',
                   style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, fontFamily: WindowService.monoFont, color: const Color(0xFF151515)),
                 ),
+                if (warningMsg != null && warningMsg.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    warningMsg,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFFD97706)),
+                  ),
+                ],
                 const SizedBox(height: 22),
                 Row(
                   mainAxisSize: MainAxisSize.min,

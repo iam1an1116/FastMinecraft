@@ -426,6 +426,10 @@ class VpsRelayClient {
     });
   }
 
+  bufferedAmount() {
+    return this.ws?.bufferedAmount || 0;
+  }
+
   sendJson(obj) {
     if (!this.connected || this.ws?.readyState !== WebSocket.OPEN) return false;
     try {
@@ -458,6 +462,207 @@ class VpsRelayClient {
       this.ws = null;
     }
   }
+}
+
+function getLocalConnectHosts(lanIp) {
+  const hosts = ['127.0.0.1', '::1'];
+  if (lanIp && lanIp !== '127.0.0.1' && lanIp !== '0.0.0.0') {
+    hosts.push(lanIp);
+  }
+  return hosts;
+}
+
+function probeLocalPort(port, lanIp = null) {
+  const hosts = getLocalConnectHosts(lanIp);
+  return new Promise((resolve) => {
+    let idx = 0;
+    const tryNext = () => {
+      if (idx >= hosts.length) {
+        resolve(false);
+        return;
+      }
+      const host = hosts[idx++];
+      let settled = false;
+      const sock = net.connect({ host, port });
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { sock.destroy(); } catch (_) {}
+        tryNext();
+      }, 280);
+      sock.once('connect', () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { sock.destroy(); } catch (_) {}
+        resolve(true);
+      });
+      sock.once('error', () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { sock.destroy(); } catch (_) {}
+        tryNext();
+      });
+    };
+    tryNext();
+  });
+}
+
+// Connects reliably to a local Minecraft server across 127.0.0.1 -> ::1 -> LAN IP
+// while buffering any early incoming chunks until the winning socket connects.
+function connectToLocalGamePort(port, lanIp, callbacks = {}) {
+  const hosts = getLocalConnectHosts(lanIp);
+  let targetIdx = 0;
+  let activeSock = null;
+  let connected = false;
+  let destroyed = false;
+  let endedByCaller = false;
+  const pendingWrites = [];
+  const listeners = { data: [], close: [], error: [] };
+
+  const emit = (evt, a, b) => {
+    for (const fn of listeners[evt]) {
+      try { fn(a, b); } catch (_) {}
+    }
+  };
+
+  const flushPending = () => {
+    while (pendingWrites.length > 0 && activeSock && !activeSock.destroyed) {
+      const chunk = pendingWrites.shift();
+      activeSock.write(chunk);
+    }
+    if (endedByCaller && activeSock && !activeSock.destroyed) {
+      try { activeSock.end(); } catch (_) {}
+    }
+  };
+
+  const attemptNext = (lastErr) => {
+    if (destroyed) return;
+    if (targetIdx >= hosts.length) {
+      destroyed = true;
+      pendingWrites.length = 0;
+      const err = lastErr || new Error('ECONNREFUSED');
+      if (callbacks.onError) callbacks.onError(err, false);
+      emit('error', err, false);
+      if (callbacks.onClose) callbacks.onClose();
+      emit('close');
+      return;
+    }
+
+    const host = hosts[targetIdx++];
+    const sock = net.connect({ host, port });
+    activeSock = sock;
+    let attemptSettled = false;
+
+    const connectTimer = setTimeout(() => {
+      if (!attemptSettled && !connected) {
+        attemptSettled = true;
+        try { sock.destroy(); } catch (_) {}
+        attemptNext(new Error('ETIMEDOUT'));
+      }
+    }, 1500);
+
+    sock.once('connect', () => {
+      clearTimeout(connectTimer);
+      if (destroyed) {
+        try { sock.destroy(); } catch (_) {}
+        return;
+      }
+      attemptSettled = true;
+      connected = true;
+      try { sock.setNoDelay(true); } catch (_) {}
+      flushPending();
+      if (callbacks.onConnect) callbacks.onConnect();
+    });
+
+    sock.on('data', (chunk) => {
+      if (!destroyed && connected) {
+        if (callbacks.onData) callbacks.onData(chunk);
+        emit('data', chunk);
+      }
+    });
+
+    sock.on('close', () => {
+      clearTimeout(connectTimer);
+      if (!connected) {
+        if (!attemptSettled) {
+          attemptSettled = true;
+          attemptNext(lastErr);
+        }
+        return;
+      }
+      if (!destroyed) {
+        destroyed = true;
+        if (callbacks.onClose) callbacks.onClose();
+        emit('close');
+      }
+    });
+
+    sock.on('error', (err) => {
+      clearTimeout(connectTimer);
+      if (!connected) {
+        if (!attemptSettled) {
+          attemptSettled = true;
+          try { sock.destroy(); } catch (_) {}
+          attemptNext(err);
+        }
+        return;
+      }
+      if (!destroyed) {
+        destroyed = true;
+        if (callbacks.onError) callbacks.onError(err, true);
+        emit('error', err, true);
+      }
+    });
+  };
+
+  attemptNext(null);
+
+  return {
+    get connected() {
+      return connected;
+    },
+    get destroyed() {
+      return destroyed;
+    },
+    on(evt, fn) {
+      if (listeners[evt]) listeners[evt].push(fn);
+      return this;
+    },
+    setNoDelay() {},
+    write(buf) {
+      if (destroyed) return false;
+      if (!connected || !activeSock || activeSock.destroyed) {
+        pendingWrites.push(Buffer.from(buf));
+        return true;
+      }
+      return activeSock.write(buf);
+    },
+    pause() {
+      if (activeSock && !activeSock.destroyed) {
+        try { activeSock.pause(); } catch (_) {}
+      }
+    },
+    resume() {
+      if (activeSock && !activeSock.destroyed) {
+        try { activeSock.resume(); } catch (_) {}
+      }
+    },
+    end() {
+      endedByCaller = true;
+      if (connected && activeSock && !activeSock.destroyed) {
+        try { activeSock.end(); } catch (_) {}
+      }
+    },
+    destroy() {
+      destroyed = true;
+      pendingWrites.length = 0;
+      if (activeSock) {
+        try { activeSock.destroy(); } catch (_) {}
+      }
+    },
+  };
 }
 
 // Reliable framed stream over punched UDP peer with adaptive RTO & sliding window
@@ -533,6 +738,7 @@ class ReliableUdpBridge {
   }
 
   attachLocalTcp(connId, tcpSocket, sendOpenPacket = false) {
+    try { tcpSocket.setNoDelay?.(true); } catch (_) {}
     const state = {
       tcpSocket,
       nextTxSeq: 1,
@@ -695,25 +901,46 @@ class P2PManagerClass {
       pubPort: localUdpPort,
       lanIp,
       localUdpPort,
+      portListening: null,
       peers: new Map(), // `${ip}:${port}` -> { bridge, lastSeen }
-      relayStreams: new Map(), // `${peerNum}:${connId}` -> tcpSocket
+      relayStreams: new Map(), // `${peerNum}:${connId}` -> tcpWrapper
+      closedRelayStreams: new Map(), // `${peerNum}:${connId}` -> expireTs
       relayPeers: new Set(),
       pruneTimer: null,
+      portProbeTimer: null,
       announceTimer: null,
+      vpsReconnectTimer: null,
+      destroyed: false,
       lastConnectError: null,
       error: null,
     };
     this.hostSessions.set(serverId, session);
 
+    const refreshPortProbe = async () => {
+      if (session.destroyed || this.hostSessions.get(serverId) !== session) return;
+      const ok = await probeLocalPort(session.gamePort, session.lanIp);
+      if (session.destroyed || this.hostSessions.get(serverId) !== session) return;
+      session.portListening = ok;
+      if (ok && session.lastConnectError) {
+        session.lastConnectError = null;
+      }
+    };
+    refreshPortProbe();
+    session.portProbeTimer = setInterval(refreshPortProbe, 2500);
+
     session.pruneTimer = setInterval(() => {
-      const cutoff = Date.now() - 90000;
+      const now = Date.now();
+      const cutoff = now - 90000;
       for (const [k, p] of session.peers.entries()) {
         if (p.lastSeen < cutoff) {
           p.bridge.destroy();
           session.peers.delete(k);
         }
       }
-    }, 30000);
+      for (const [k, exp] of session.closedRelayStreams.entries()) {
+        if (exp <= now) session.closedRelayStreams.delete(k);
+      }
+    }, 5000);
 
     const launchPunchBurst = (p) => {
       if (!this.hostSessions.has(serverId)) return;
@@ -736,39 +963,72 @@ class P2PManagerClass {
 
     const openRelayStream = (peerNum, connId) => {
       const streamKey = `${peerNum}:${connId}`;
-      if (session.relayStreams.has(streamKey)) return;
+      if (session.relayStreams.has(streamKey) || session.closedRelayStreams.has(streamKey)) {
+        return session.relayStreams.get(streamKey) || null;
+      }
       session.relayPeers.add(peerNum);
       session.transport = 'relay';
       session.status = 'connected';
 
-      const tcp = net.connect({
-        port: session.gamePort,
-        host: 'localhost',
-        autoSelectFamily: true,
+      let backpressureTimer = null;
+      const tcp = connectToLocalGamePort(session.gamePort, session.lanIp, {
+        onConnect: () => {
+          session.lastConnectError = null;
+          session.portListening = true;
+        },
+        onData: (chunk) => {
+          let off = 0;
+          while (off < chunk.length) {
+            const slice = chunk.subarray(off, off + 16384);
+            off += slice.length;
+            session.vps.sendBinary(2, peerNum, connId, slice);
+          }
+          if (session.vps.bufferedAmount() > 512 * 1024 && !backpressureTimer) {
+            tcp.pause();
+            backpressureTimer = setInterval(() => {
+              if (tcp.destroyed || session.destroyed) {
+                clearInterval(backpressureTimer);
+                backpressureTimer = null;
+                return;
+              }
+              if (session.vps.bufferedAmount() < 128 * 1024) {
+                clearInterval(backpressureTimer);
+                backpressureTimer = null;
+                tcp.resume();
+              }
+            }, 30);
+          }
+        },
+        onClose: () => {
+          if (backpressureTimer) {
+            clearInterval(backpressureTimer);
+            backpressureTimer = null;
+          }
+          if (session.relayStreams.get(streamKey) === tcp) {
+            session.relayStreams.delete(streamKey);
+            session.closedRelayStreams.set(streamKey, Date.now() + 5000);
+            session.vps.sendJson({ type: 'relay_close', roomCode, peerNum, connId });
+          }
+        },
+        onError: (err, wasConnected) => {
+          if (!wasConnected) {
+            const msgText = `无法连接房主本地 MC 端口 ${session.gamePort} (${err.code || err.message})，请确认 MC 服务器已启动`;
+            session.lastConnectError = msgText;
+            session.portListening = false;
+            session.vps.sendJson({
+              type: 'relay_error',
+              roomCode,
+              peerNum,
+              connId,
+              error: msgText,
+            });
+          } else {
+            session.lastConnectError = `MC 本地连接中断 (${err.code || err.message})`;
+          }
+        },
       });
       session.relayStreams.set(streamKey, tcp);
-
-      tcp.on('data', (chunk) => {
-        // Chunk into <= 16KB binary relay frames for responsive low-jitter streaming
-        let off = 0;
-        while (off < chunk.length) {
-          const slice = chunk.subarray(off, off + 16384);
-          off += slice.length;
-          session.vps.sendBinary(2, peerNum, connId, slice);
-        }
-      });
-
-      tcp.on('close', () => {
-        if (session.relayStreams.get(streamKey) === tcp) {
-          session.relayStreams.delete(streamKey);
-          session.vps.sendJson({ type: 'relay_close', roomCode, peerNum, connId });
-        }
-      });
-
-      tcp.on('error', (err) => {
-        session.lastConnectError = `本地 ${session.gamePort} 端口不可达 (${err.code || err.message})`;
-        try { tcp.destroy(); } catch (_) {}
-      });
+      return tcp;
     };
 
     socket.on('message', (msg, rinfo) => {
@@ -816,13 +1076,17 @@ class P2PManagerClass {
       if (peer) {
         peer.lastSeen = Date.now();
         peer.bridge.handlePacket(msg, (connId) => {
-          const tcp = net.connect({
-            port: session.gamePort,
-            host: 'localhost',
-            autoSelectFamily: true,
-          });
-          tcp.on('error', (err) => {
-            session.lastConnectError = `本地 ${session.gamePort} 端口不可达 (${err.code || err.message})`;
+          const tcp = connectToLocalGamePort(session.gamePort, session.lanIp, {
+            onConnect: () => {
+              session.lastConnectError = null;
+              session.portListening = true;
+            },
+            onError: (err, wasConnected) => {
+              if (!wasConnected) {
+                session.lastConnectError = `无法连接房主本地 MC 端口 ${session.gamePort} (${err.code || err.message})，请确认 MC 服务器已启动`;
+                session.portListening = false;
+              }
+            },
           });
           peer.bridge.attachLocalTcp(connId, tcp, false);
         });
@@ -830,13 +1094,14 @@ class P2PManagerClass {
     });
 
     session.vps.onJson = (msg) => {
-      if (!this.hostSessions.has(serverId)) return;
+      if (session.destroyed || this.hostSessions.get(serverId) !== session) return;
       if (msg.type === 'player_join') {
         launchPunchBurst(msg.payload || {});
       } else if (msg.type === 'relay_open') {
         openRelayStream(Number(msg.peerNum), Number(msg.connId));
       } else if (msg.type === 'relay_close') {
         const key = `${msg.peerNum}:${msg.connId}`;
+        session.closedRelayStreams.set(key, Date.now() + 5000);
         const tcp = session.relayStreams.get(key);
         if (tcp) {
           session.relayStreams.delete(key);
@@ -857,22 +1122,22 @@ class P2PManagerClass {
     };
 
     session.vps.onBinary = (buf) => {
+      if (session.destroyed || this.hostSessions.get(serverId) !== session) return;
       if (buf.length < 9 || buf[0] !== 1) return;
       const peerNum = buf.readUInt32BE(1);
       const connId = buf.readUInt32BE(5);
       const payload = buf.subarray(9);
       const key = `${peerNum}:${connId}`;
+      if (session.closedRelayStreams.has(key)) return;
       let tcp = session.relayStreams.get(key);
       if (!tcp) {
-        openRelayStream(peerNum, connId);
-        tcp = session.relayStreams.get(key);
+        tcp = openRelayStream(peerNum, connId);
       }
       if (tcp && !tcp.destroyed) {
         tcp.write(payload);
       }
     };
 
-    // Connect VPS signaling & run STUN in parallel so room is registered within ~150ms
     const payloadJson = () => ({
       pubIp: session.pubIp,
       pubPort: session.pubPort,
@@ -883,15 +1148,34 @@ class P2PManagerClass {
       ts: Date.now(),
     });
 
+    let reconnectDelay = 1200;
+    session.vps.onClose = () => {
+      if (session.destroyed || this.hostSessions.get(serverId) !== session) return;
+      if (session.vpsReconnectTimer) return;
+      const delay = reconnectDelay;
+      reconnectDelay = Math.min(8000, Math.round(reconnectDelay * 1.6));
+      session.vpsReconnectTimer = setTimeout(async () => {
+        session.vpsReconnectTimer = null;
+        if (session.destroyed || this.hostSessions.get(serverId) !== session) return;
+        const ok = await session.vps.connect();
+        if (ok && !session.destroyed && this.hostSessions.get(serverId) === session) {
+          reconnectDelay = 1200;
+          session.vps.sendJson({ type: 'host_register', roomCode, payload: payloadJson() });
+        } else if (!session.destroyed && this.hostSessions.get(serverId) === session) {
+          session.vps.onClose();
+        }
+      }, delay);
+    };
+
     const vpsConnectPromise = session.vps.connect().then((ok) => {
-      if (ok && this.hostSessions.has(serverId)) {
+      if (ok && !session.destroyed && this.hostSessions.get(serverId) === session) {
         session.vps.sendJson({ type: 'host_register', roomCode, payload: payloadJson() });
       }
       return ok;
     });
 
     const stunPromise = discoverPublicEndpoint(socket).then(({ endpoint, natType }) => {
-      if (!this.hostSessions.has(serverId)) return;
+      if (session.destroyed || this.hostSessions.get(serverId) !== session) return;
       session.natType = natType;
       session.pubIp = endpoint?.ip || lanIp;
       session.pubPort = endpoint?.port || localUdpPort;
@@ -900,19 +1184,17 @@ class P2PManagerClass {
       }
     });
 
-    // Wait briefly for VPS registration + STUN (fast path)
     await Promise.race([
       Promise.all([vpsConnectPromise, stunPromise]),
       new Promise((r) => setTimeout(r, 1400)),
     ]);
 
-    if (this.hostSessions.has(serverId)) {
+    if (!session.destroyed && this.hostSessions.get(serverId) === session) {
       if (session.status === 'stun') session.status = 'waiting_peer';
-      // Also announce on fallback EMQX WebSocket asynchronously
       (async () => {
         try {
           const ok = await session.fallbackMqtt.connect();
-          if (!ok || !this.hostSessions.has(serverId)) return;
+          if (!ok || session.destroyed || this.hostSessions.get(serverId) !== session) return;
           const hostTopic = `fastmc/p2p/${roomCode}/host`;
           const playerTopic = `fastmc/p2p/${roomCode}/player`;
           session.fallbackMqtt.onMessage = (topic, text) => {
@@ -921,7 +1203,7 @@ class P2PManagerClass {
           };
           session.fallbackMqtt.subscribe(playerTopic);
           const announce = () => {
-            if (session.fallbackMqtt.connected && this.hostSessions.has(serverId)) {
+            if (session.fallbackMqtt.connected && !session.destroyed && this.hostSessions.get(serverId) === session) {
               session.fallbackMqtt.publish(hostTopic, JSON.stringify(payloadJson()), true);
             }
           };
@@ -938,9 +1220,12 @@ class P2PManagerClass {
   stopHost(serverId) {
     const s = this.hostSessions.get(serverId);
     if (!s) return { stopped: true };
+    s.destroyed = true;
     this.hostSessions.delete(serverId);
     if (s.announceTimer) clearInterval(s.announceTimer);
     if (s.pruneTimer) clearInterval(s.pruneTimer);
+    if (s.portProbeTimer) clearInterval(s.portProbeTimer);
+    if (s.vpsReconnectTimer) clearTimeout(s.vpsReconnectTimer);
     try {
       if (s.fallbackMqtt.connected) s.fallbackMqtt.publish(`fastmc/p2p/${s.roomCode}/host`, '', true);
       s.fallbackMqtt.close();
@@ -951,6 +1236,7 @@ class P2PManagerClass {
       try { tcp.destroy(); } catch (_) {}
     }
     s.relayStreams.clear();
+    s.closedRelayStreams.clear();
     try { s.socket.close(); } catch (_) {}
     return { stopped: true };
   }
@@ -968,6 +1254,7 @@ class P2PManagerClass {
       pubPort: s.pubPort,
       lanIp: s.lanIp,
       gamePort: s.gamePort,
+      portListening: s.portListening,
       peersCount: s.peers.size + s.relayPeers.size,
       vpsConnected: s.vps.connected,
       error: s.error || s.lastConnectError || null,
@@ -992,6 +1279,7 @@ class P2PManagerClass {
       vps: new VpsRelayClient(),
       fallbackMqtt: new FallbackMqttSignaling(),
       tcpServer: null,
+      ipv6Server: null,
       bridge: null,
       relayStreams: new Map(), // connId -> tcpSocket
       relayMode: false,
@@ -1010,49 +1298,80 @@ class P2PManagerClass {
       punchTimer: null,
       fallbackTimer: null,
       keepaliveTimer: null,
+      vpsReconnectTimer: null,
+      destroyed: false,
+      relayWarning: null,
       error: null,
     };
     this.playerSession = session;
 
+    const handleAcceptedSocket = (tcpSocket) => {
+      if (session.destroyed || this.playerSession !== session) {
+        tcpSocket.destroy();
+        return;
+      }
+      try { tcpSocket.setNoDelay(true); } catch (_) {}
+      const connId = session.nextConnId++;
+      if (session.relayMode) {
+        if (!session.vps.connected) {
+          session.relayWarning = '中继连接正在重连，请稍等一秒后重连 MC';
+          tcpSocket.destroy();
+          return;
+        }
+        let backpressureTimer = null;
+        session.relayStreams.set(connId, tcpSocket);
+        session.vps.sendJson({ type: 'relay_open', roomCode: cleanCode, connId });
+        tcpSocket.on('data', (chunk) => {
+          if (!session.relayMode || !session.vps.connected) return;
+          let off = 0;
+          while (off < chunk.length) {
+            const slice = chunk.subarray(off, off + 16384);
+            off += slice.length;
+            session.vps.sendBinary(1, 0, connId, slice);
+          }
+          if (session.vps.bufferedAmount() > 512 * 1024 && !backpressureTimer) {
+            try { tcpSocket.pause(); } catch (_) {}
+            backpressureTimer = setInterval(() => {
+              if (tcpSocket.destroyed || session.destroyed) {
+                clearInterval(backpressureTimer);
+                backpressureTimer = null;
+                return;
+              }
+              if (session.vps.bufferedAmount() < 128 * 1024) {
+                clearInterval(backpressureTimer);
+                backpressureTimer = null;
+                try { tcpSocket.resume(); } catch (_) {}
+              }
+            }, 30);
+          }
+        });
+        tcpSocket.on('close', () => {
+          if (backpressureTimer) {
+            clearInterval(backpressureTimer);
+            backpressureTimer = null;
+          }
+          if (session.relayStreams.get(connId) === tcpSocket) {
+            session.relayStreams.delete(connId);
+            session.vps.sendJson({ type: 'relay_close', roomCode: cleanCode, connId });
+          }
+        });
+        tcpSocket.on('error', () => {
+          try { tcpSocket.destroy(); } catch (_) {}
+        });
+        return;
+      }
+      if (!session.bridge) {
+        tcpSocket.destroy();
+        return;
+      }
+      session.bridge.attachLocalTcp(connId, tcpSocket, true);
+    };
+
     let proxyStarting = false;
     const startTcpProxy = async (transportName) => {
-      if (session.tcpServer || proxyStarting || this.playerSession !== session) return;
+      if (session.tcpServer || proxyStarting || session.destroyed || this.playerSession !== session) return;
       proxyStarting = true;
-      const srv = net.createServer((tcpSocket) => {
-        if (this.playerSession !== session) {
-          tcpSocket.destroy();
-          return;
-        }
-        const connId = session.nextConnId++;
-        if (session.relayMode) {
-          session.relayStreams.set(connId, tcpSocket);
-          session.vps.sendJson({ type: 'relay_open', roomCode: cleanCode, connId });
-          tcpSocket.on('data', (chunk) => {
-            if (!session.relayMode) return;
-            let off = 0;
-            while (off < chunk.length) {
-              const slice = chunk.subarray(off, off + 16384);
-              off += slice.length;
-              session.vps.sendBinary(1, 0, connId, slice);
-            }
-          });
-          tcpSocket.on('close', () => {
-            if (session.relayStreams.get(connId) === tcpSocket) {
-              session.relayStreams.delete(connId);
-              session.vps.sendJson({ type: 'relay_close', roomCode: cleanCode, connId });
-            }
-          });
-          tcpSocket.on('error', () => {
-            try { tcpSocket.destroy(); } catch (_) {}
-          });
-          return;
-        }
-        if (!session.bridge) {
-          tcpSocket.destroy();
-          return;
-        }
-        session.bridge.attachLocalTcp(connId, tcpSocket, true);
-      });
+      const srv = net.createServer(handleAcceptedSocket);
 
       await new Promise((resolve) => {
         srv.once('error', () => {
@@ -1061,7 +1380,7 @@ class P2PManagerClass {
         srv.listen(requestedLocalPort, '127.0.0.1', resolve);
       });
 
-      if (this.playerSession !== session) {
+      if (session.destroyed || this.playerSession !== session) {
         try { srv.close(); } catch (_) {}
         return;
       }
@@ -1071,16 +1390,32 @@ class P2PManagerClass {
       session.localAddress = `127.0.0.1:${addr.port}`;
       session.transport = transportName;
       session.status = 'connected';
+
+      // Best-effort IPv6 loopback companion listener on the same port so `localhost:<port>`
+      // works seamlessly alongside `127.0.0.1:<port>` on Windows dual-stack setups.
+      try {
+        const ipv6Srv = net.createServer(handleAcceptedSocket);
+        ipv6Srv.once('error', () => {
+          try { ipv6Srv.close(); } catch (_) {}
+        });
+        ipv6Srv.listen({ port: addr.port, host: '::1', ipv6Only: true }, () => {
+          if (session.destroyed || this.playerSession !== session) {
+            try { ipv6Srv.close(); } catch (_) {}
+            return;
+          }
+          session.ipv6Server = ipv6Srv;
+        });
+      } catch (_) {}
     };
 
     const activateRelayFallback = () => {
-      if (this.playerSession !== session || session.status === 'connected' || session.relayMode) return;
+      if (session.destroyed || this.playerSession !== session || session.status === 'connected' || session.relayMode) return;
       if (!session.vps.connected) return;
       if (session.punchTimer) clearInterval(session.punchTimer);
       session.relayMode = true;
       session.vps.sendJson({ type: 'relay_e2e_ping', roomCode: cleanCode, ts: Date.now() });
       session.keepaliveTimer = setInterval(() => {
-        if (this.playerSession === session && session.relayMode && session.vps.connected) {
+        if (!session.destroyed && this.playerSession === session && session.relayMode && session.vps.connected) {
           session.vps.sendJson({ type: 'relay_e2e_ping', roomCode: cleanCode, ts: Date.now() });
         }
       }, 4000);
@@ -1088,7 +1423,7 @@ class P2PManagerClass {
     };
 
     socket.on('message', (msg, rinfo) => {
-      if (msg.length < 1 || this.playerSession !== session || session.relayMode) return;
+      if (msg.length < 1 || session.destroyed || this.playerSession !== session || session.relayMode) return;
       const type = msg[0];
 
       if (type === PKT_PUNCH || type === PKT_PUNCH_ACK) {
@@ -1131,12 +1466,48 @@ class P2PManagerClass {
     });
 
     session.vps.onBinary = (buf) => {
-      if (this.playerSession !== session || !session.relayMode || buf.length < 9 || buf[0] !== 2) return;
+      if (session.destroyed || this.playerSession !== session || !session.relayMode || buf.length < 9 || buf[0] !== 2) return;
       const connId = buf.readUInt32BE(5);
       const tcp = session.relayStreams.get(connId);
       if (tcp && !tcp.destroyed) {
+        session.relayWarning = null;
         tcp.write(buf.subarray(9));
       }
+    };
+
+    const sendPlayerJoin = () => {
+      session.vps.sendJson({
+        type: 'player_join',
+        roomCode: cleanCode,
+        payload: {
+          pubIp: session.pubIp,
+          pubPort: session.pubPort,
+          lanIp: session.lanIp,
+          localUdpPort: session.localUdpPort,
+          natType: session.natType,
+        },
+      });
+    };
+
+    let vpsReconnectDelay = 1200;
+    session.vps.onClose = () => {
+      if (session.destroyed || this.playerSession !== session || !session.relayMode) return;
+      if (session.vpsReconnectTimer) return;
+      const delay = vpsReconnectDelay;
+      vpsReconnectDelay = Math.min(8000, Math.round(vpsReconnectDelay * 1.6));
+      session.vpsReconnectTimer = setTimeout(async () => {
+        session.vpsReconnectTimer = null;
+        if (session.destroyed || this.playerSession !== session || !session.relayMode) return;
+        const ok = await session.vps.connect();
+        if (ok && !session.destroyed && this.playerSession === session) {
+          vpsReconnectDelay = 1200;
+          session.relayWarning = null;
+          sendPlayerJoin();
+        } else if (!session.destroyed && this.playerSession === session) {
+          session.relayWarning = '中继服务器暂时断开，正在尝试重连...';
+          session.vps.onClose();
+        }
+      }, delay);
     };
 
     (async () => {
@@ -1144,7 +1515,7 @@ class P2PManagerClass {
         const vpsPromise = session.vps.connect();
         const stunPromise = discoverPublicEndpoint(socket);
         const [{ endpoint, natType }, vpsOk] = await Promise.all([stunPromise, vpsPromise]);
-        if (this.playerSession !== session) return;
+        if (session.destroyed || this.playerSession !== session) return;
 
         session.natType = natType;
         session.pubIp = endpoint?.ip || lanIp;
@@ -1153,9 +1524,10 @@ class P2PManagerClass {
 
         let punchingStarted = false;
         let vpsSaidNotFound = false;
+        let retriedVpsJoin = false;
 
         const beginPunchWithHost = (h, viaVps) => {
-          if (this.playerSession !== session || (!h.pubIp && !h.lanIp) || punchingStarted) return;
+          if (session.destroyed || this.playerSession !== session || (!h.pubIp && !h.lanIp) || punchingStarted) return;
           punchingStarted = true;
           session.hostNatType = h.natType || 'unknown';
 
@@ -1183,7 +1555,7 @@ class P2PManagerClass {
 
           if (viaVps && vpsOk) {
             session.fallbackTimer = setTimeout(() => {
-              if (this.playerSession === session && session.status !== 'connected' && !session.bridge) {
+              if (!session.destroyed && this.playerSession === session && session.status !== 'connected' && !session.bridge) {
                 activateRelayFallback();
               }
             }, fallbackDelayMs);
@@ -1191,7 +1563,7 @@ class P2PManagerClass {
 
           let attempts = 0;
           session.punchTimer = setInterval(() => {
-            if (this.playerSession !== session || session.status === 'connected' || session.relayMode) {
+            if (session.destroyed || this.playerSession !== session || session.status === 'connected' || session.relayMode) {
               clearInterval(session.punchTimer);
               return;
             }
@@ -1219,7 +1591,7 @@ class P2PManagerClass {
           }, 160);
 
           session.keepaliveTimer = setInterval(() => {
-            if (this.playerSession === session && !session.relayMode && session.bridge && session.status === 'connected') {
+            if (!session.destroyed && this.playerSession === session && !session.relayMode && session.bridge && session.status === 'connected') {
               const ping = Buffer.alloc(9);
               ping[0] = PKT_PING;
               ping.writeDoubleBE(Date.now(), 1);
@@ -1229,17 +1601,27 @@ class P2PManagerClass {
         };
 
         session.vps.onJson = (msg) => {
-          if (this.playerSession !== session) return;
+          if (session.destroyed || this.playerSession !== session) return;
           if (msg.type === 'host_info') {
             beginPunchWithHost(msg.payload || {}, true);
           } else if (msg.type === 'room_not_found') {
             vpsSaidNotFound = true;
+            if (!retriedVpsJoin && !punchingStarted && session.vps.connected) {
+              retriedVpsJoin = true;
+              setTimeout(() => {
+                if (!session.destroyed && this.playerSession === session && !punchingStarted && session.vps.connected) {
+                  sendPlayerJoin();
+                }
+              }, 850);
+            }
           } else if (msg.type === 'relay_close') {
             const tcp = session.relayStreams.get(Number(msg.connId));
             if (tcp) {
               session.relayStreams.delete(Number(msg.connId));
               try { tcp.end(); } catch (_) {}
             }
+          } else if (msg.type === 'relay_error') {
+            session.relayWarning = msg.error || '无法连接房主 MC 服务端，请确认房主已启动服务器';
           } else if (msg.type === 'relay_e2e_pong') {
             const rtt = Math.max(1, Math.round(Date.now() - Number(msg.ts || 0)));
             if (rtt < 5000) session.pingMs = rtt;
@@ -1252,22 +1634,12 @@ class P2PManagerClass {
         };
 
         if (vpsOk) {
-          session.vps.sendJson({
-            type: 'player_join',
-            roomCode: cleanCode,
-            payload: {
-              pubIp: session.pubIp,
-              pubPort: session.pubPort,
-              lanIp: session.lanIp,
-              localUdpPort: session.localUdpPort,
-              natType: session.natType,
-            },
-          });
+          sendPlayerJoin();
         }
 
         // Start fallback MQTT lookup in parallel (useful if host wasn't connected to VPS)
         session.fallbackMqtt.connect().then((ok) => {
-          if (!ok || this.playerSession !== session || punchingStarted) return;
+          if (!ok || session.destroyed || this.playerSession !== session || punchingStarted) return;
           const hostTopic = `fastmc/p2p/${cleanCode}/host`;
           session.fallbackMqtt.onMessage = (topic, text) => {
             if (topic !== hostTopic || !text) return;
@@ -1277,13 +1649,13 @@ class P2PManagerClass {
         }).catch(() => {});
 
         setTimeout(() => {
-          if (this.playerSession === session && !punchingStarted && session.status === 'signaling') {
+          if (!session.destroyed && this.playerSession === session && !punchingStarted && session.status === 'signaling') {
             session.status = 'error';
             session.error = vpsSaidNotFound
               ? `未找到房间 ${cleanCode}，请确认房主已开启联机`
               : `未找到房间 ${cleanCode}，请确认房主已开启 P2P 房间`;
           }
-        }, vpsOk ? 4000 : 9000);
+        }, vpsOk ? 4500 : 9000);
       } catch (err) {
         session.status = 'error';
         session.error = err.message;
@@ -1296,10 +1668,12 @@ class P2PManagerClass {
   leaveRoom() {
     const s = this.playerSession;
     if (!s) return { left: true };
+    s.destroyed = true;
     this.playerSession = null;
     if (s.punchTimer) clearInterval(s.punchTimer);
     if (s.fallbackTimer) clearTimeout(s.fallbackTimer);
     if (s.keepaliveTimer) clearInterval(s.keepaliveTimer);
+    if (s.vpsReconnectTimer) clearTimeout(s.vpsReconnectTimer);
     try { s.fallbackMqtt.close(); } catch (_) {}
     try { s.vps.close(); } catch (_) {}
     if (s.bridge) s.bridge.destroy();
@@ -1307,6 +1681,7 @@ class P2PManagerClass {
       try { tcp.destroy(); } catch (_) {}
     }
     s.relayStreams.clear();
+    if (s.ipv6Server) try { s.ipv6Server.close(); } catch (_) {}
     if (s.tcpServer) try { s.tcpServer.close(); } catch (_) {}
     try { s.socket.close(); } catch (_) {}
     return { left: true };
@@ -1324,6 +1699,7 @@ class P2PManagerClass {
       natType: s.natType,
       hostNatType: s.hostNatType,
       vpsConnected: s.vps.connected,
+      warning: s.relayWarning,
       error: s.error,
     };
   }

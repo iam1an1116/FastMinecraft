@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../services/window_service.dart';
@@ -14,7 +15,9 @@ class RoleOnboarding extends StatelessWidget {
       behavior: HitTestBehavior.translucent,
       onPanStart: (_) => WindowService.startDragging(),
       child: Container(
-        color: Colors.white.withOpacity(0.75),
+        color: Platform.isMacOS
+            ? Colors.white.withOpacity(0.45)
+            : Colors.white.withOpacity(0.26),
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
