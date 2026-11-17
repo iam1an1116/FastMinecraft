@@ -22,11 +22,15 @@ constexpr DWORD kDwmwaSystemBackdropType = 38;
 constexpr DWORD kDwmwaMicaEffect = 1029;
 constexpr DWORD kDwmwaColorNone = 0xFFFFFFFE;
 constexpr UINT_PTR kChildSubclassId = 101;
-constexpr DWORD kWin11AcrylicTintAbgr = 0x52F2F5F8;
-constexpr DWORD kWin10AcrylicTintAbgr = 0x5CF2F5F8;
+// ABGR (0xAABBGGRR): bright cool snow-white frosted acrylic (~71% Win11 / ~76% Win10)
+// High alpha avoids DWM luminosity darkening turning light-blue wallpapers muddy gray.
+constexpr DWORD kWin11AcrylicTintAbgr = 0xB4FFFDFA;
+constexpr DWORD kWin10AcrylicTintAbgr = 0xC2FFFDFA;
+constexpr DWORD kDragFallbackTintAbgr = 0xD8FFFDFA;
 
 enum FmAccentState {
   kAccentDisabled = 0,
+  kAccentEnableTransparentGradient = 2,
   kAccentEnableBlurBehind = 3,
   kAccentEnableAcrylicBlurBehind = 4,
 };
@@ -136,6 +140,10 @@ void FlutterWindow::ApplyFramelessBackdrop(HWND hwnd) {
   style |= static_cast<LONG_PTR>(WS_CLIPCHILDREN);
   SetWindowLongPtrW(hwnd, GWL_STYLE, style);
   SetMenu(hwnd, nullptr);
+
+  // Override Win32Window::UpdateTheme so light frosted glass never flips dark
+  BOOL dark = FALSE;
+  DwmSetWindowAttribute(hwnd, kDwmwaUseImmersiveDarkMode, &dark, sizeof(dark));
 
   MARGINS margins = {-1, -1, -1, -1};
   DwmExtendFrameIntoClientArea(hwnd, &margins);
@@ -400,13 +408,19 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       }
       break;
     case WM_ENTERSIZEMOVE:
-      SetAccentPolicy(hwnd, kAccentEnableBlurBehind, 2, 0);
+      if (GetWindowsBuildNumber() < 22000) {
+        SetAccentPolicy(hwnd, kAccentEnableTransparentGradient, 2, kDragFallbackTintAbgr);
+      }
       break;
     case WM_EXITSIZEMOVE:
       SetAccentPolicy(hwnd, kAccentEnableAcrylicBlurBehind, 2,
                       GetWindowsBuildNumber() >= 22000 ? kWin11AcrylicTintAbgr
                                                        : kWin10AcrylicTintAbgr);
       break;
+    case WM_DWMCOLORIZATIONCOLORCHANGED:
+    case WM_DWMCOMPOSITIONCHANGED:
+      ApplyFramelessBackdrop(hwnd);
+      return 0;
     case WM_NCHITTEST: {
       RECT rect;
       GetWindowRect(hwnd, &rect);

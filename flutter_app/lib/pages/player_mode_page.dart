@@ -180,31 +180,38 @@ class _PlayerModePageState extends State<PlayerModePage> {
                   ],
                 ),
               ] else ...[
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: BoxDecoration(
-                        color: _p2p['transport'] == 'relay' ? const Color(0xFF0284C7) : const Color(0xFF10B981),
-                        shape: BoxShape.circle,
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: (_p2p['transport'] == 'relay' ? const Color(0xFF0284C7) : const Color(0xFF10B981)).withOpacity(0.11),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          color: _p2p['transport'] == 'relay' ? const Color(0xFF0284C7) : const Color(0xFF10B981),
+                          shape: BoxShape.circle,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _p2p['transport'] == 'relay' ? '中继兜底已就绪' : 'P2P 直连已就绪',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                        color: _p2p['transport'] == 'relay' ? const Color(0xFF0369A1) : const Color(0xFF059669),
+                      const SizedBox(width: 6),
+                      Text(
+                        _p2p['transport'] == 'relay' ? '中继兜底已就绪' : 'P2P 直连已就绪',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: _p2p['transport'] == 'relay' ? const Color(0xFF0369A1) : const Color(0xFF047857),
+                        ),
                       ),
-                    ),
-                    if (pingMs != null) ...[
-                      const SizedBox(width: 8),
-                      Text('$pingMs ms', style: TextStyle(fontSize: 12, fontFamily: WindowService.monoFont, color: Colors.black.withOpacity(0.45))),
+                      if (pingMs != null) ...[
+                        const SizedBox(width: 8),
+                        Text('$pingMs ms', style: TextStyle(fontSize: 11, fontFamily: WindowService.monoFont, color: Colors.black.withOpacity(0.5))),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
                 const SizedBox(height: 16),
                 SelectableText(

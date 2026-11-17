@@ -42,7 +42,7 @@ class DesktopHeader extends StatelessWidget {
       child: Container(
         height: 54,
         padding: EdgeInsets.only(left: Platform.isMacOS ? 84 : 18, right: 16),
-        color: Colors.white.withOpacity(0.08),
+        color: Colors.transparent,
         child: Row(
           children: [
             Expanded(
@@ -87,7 +87,7 @@ class DesktopHeader extends StatelessWidget {
               ],
             ),
             if (Platform.isWindows) ...[
-              const SizedBox(width: 12),
+              const SizedBox(width: 10),
               _buildWindowsCaptionButtons(),
             ],
           ],
@@ -97,28 +97,36 @@ class DesktopHeader extends StatelessWidget {
   }
 
   Widget _buildWindowsCaptionButtons() {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        RippleButton(
-          onTap: () => WindowService.minimizeWindow(),
-          borderRadius: BorderRadius.circular(10),
-          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-          child: const Icon(CupertinoIcons.minus, size: 13, color: Color(0xFF1F1F1F)),
-        ),
-        RippleButton(
-          onTap: () => WindowService.zoomWindow(),
-          borderRadius: BorderRadius.circular(10),
-          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-          child: const Icon(CupertinoIcons.square, size: 12, color: Color(0xFF1F1F1F)),
-        ),
-        RippleButton(
-          onTap: () => WindowService.closeWindow(),
-          borderRadius: BorderRadius.circular(10),
-          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-          child: const Icon(CupertinoIcons.xmark, size: 13, color: Color(0xFFE11D48)),
-        ),
-      ],
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.45),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.black.withOpacity(0.05), width: 0.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          RippleButton(
+            onTap: () => WindowService.minimizeWindow(),
+            borderRadius: BorderRadius.circular(11),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+            child: const Icon(CupertinoIcons.minus, size: 13, color: Color(0xFF1F1F1F)),
+          ),
+          RippleButton(
+            onTap: () => WindowService.zoomWindow(),
+            borderRadius: BorderRadius.circular(11),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+            child: const Icon(CupertinoIcons.square, size: 11.5, color: Color(0xFF1F1F1F)),
+          ),
+          RippleButton(
+            onTap: () => WindowService.closeWindow(),
+            borderRadius: BorderRadius.circular(11),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+            child: const Icon(CupertinoIcons.xmark, size: 13, color: Color(0xFFE11D48)),
+          ),
+        ],
+      ),
     );
   }
 

@@ -17,7 +17,7 @@ class RoleOnboarding extends StatelessWidget {
       child: Container(
         color: Platform.isMacOS
             ? Colors.white.withOpacity(0.45)
-            : Colors.white.withOpacity(0.26),
+            : Colors.white.withOpacity(0.36),
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,

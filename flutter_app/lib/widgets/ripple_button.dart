@@ -29,13 +29,13 @@ class _RippleButtonState extends State<RippleButton> {
   @override
   Widget build(BuildContext context) {
     final radius = widget.borderRadius ?? BorderRadius.circular(18);
-    final activeBg = widget.activeColor ?? Colors.black.withOpacity(0.048);
+    final activeBg = widget.activeColor ?? Colors.white.withOpacity(0.68);
 
     Color bgColor = Colors.transparent;
     if (widget.isSelected) {
       bgColor = activeBg;
     } else if (_isHovered) {
-      bgColor = Colors.black.withOpacity(0.028);
+      bgColor = Colors.white.withOpacity(0.42);
     }
 
     return MouseRegion(

@@ -94,8 +94,9 @@ class _SlidingPillBarState extends State<SlidingPillBar> {
             height: _pillHeight,
             child: Container(
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.048),
+                color: Colors.white.withOpacity(0.72),
                 borderRadius: BorderRadius.circular(widget.borderRadius),
+                border: Border.all(color: Colors.black.withOpacity(0.04), width: 0.5),
               ),
             ),
           ),
@@ -118,7 +119,7 @@ class _SlidingPillBarState extends State<SlidingPillBar> {
                     curve: Curves.easeOutCubic,
                     padding: widget.itemPadding,
                     decoration: BoxDecoration(
-                      color: isHovered ? Colors.black.withOpacity(0.025) : Colors.transparent,
+                      color: isHovered ? Colors.white.withOpacity(0.42) : Colors.transparent,
                       borderRadius: BorderRadius.circular(widget.borderRadius),
                     ),
                     child: widget.items[i].child,

@@ -116,7 +116,7 @@ class _MainAppShellState extends State<MainAppShell> {
     final double rAngle = Platform.isMacOS ? 32.0 : 8.0;
     final Color surfaceColor = Platform.isMacOS
         ? Colors.white.withOpacity(0.28)
-        : Colors.white.withOpacity(0.16);
+        : Colors.white.withOpacity(0.24);
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -127,7 +127,7 @@ class _MainAppShellState extends State<MainAppShell> {
             color: surfaceColor,
             borderRadius: BorderRadius.circular(rAngle),
             border: Border.all(
-              color: Colors.white.withOpacity(0.55),
+              color: Colors.white.withOpacity(Platform.isMacOS ? 0.55 : 0.72),
               width: 1.0,
             ),
           ),
